@@ -1,0 +1,256 @@
+﻿:root {
+    --company-logo: url("https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/Google_2015_logo.svg/250px-Google_2015_logo.svg.png");
+    --sidebar-width: 300px;
+}
+
+html, body {
+    height: 100%;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: Arial, sans-serif;
+}
+
+    html[data-theme='dark'] {
+        --bg: #121212;
+        --fg: #eee;
+        --panel: #222;
+        --sidebar-bg: #1c1c1c;
+        --border: #333;
+        --verb-get: #4caf50;
+        --verb-post: #2196f3;
+        --verb-put: #ff9800;
+        --verb-delete: #f44336;
+        --verb-patch: #9c27b0;
+    }
+
+    html[data-theme='light'] {
+        --bg: #f7f7f7;
+        --fg: #222;
+        --panel: #fff;
+        --sidebar-bg: #efefef;
+        --border: #ccc;
+        --verb-get: #4caf50;
+        --verb-post: #2196f3;
+        --verb-put: #ff9800;
+        --verb-delete: #f44336;
+        --verb-patch: #9c27b0;
+    }
+
+header {
+    height: 60px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+}
+
+#env-strip {
+    height: 10px;
+    width: 100%;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.logo {
+    width: 32px;
+    height: 32px;
+    background-image: var(--company-logo);
+    background-size: contain;
+    background-repeat: no-repeat;
+}
+
+#env-label {
+    font-size: 1rem;
+    opacity: .8;
+    margin-left: 20px;
+}
+
+.theme-btn {
+    margin-left: auto;
+    padding: 5px 10px;
+    cursor: pointer;
+}
+
+#layout {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+#sidebar {
+    width: var(--sidebar-width);
+    min-width: 150px;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+
+#resize-bar {
+    width: 5px;
+    cursor: ew-resize;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    background: transparent;
+}
+
+#controllers-container {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.menu-title {
+    padding: 15px;
+    font-weight: bold;
+}
+
+.menu-item {
+    display: block;
+    width: 100%;
+    padding: 12px 15px;
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--fg);
+}
+
+    .menu-item:hover {
+        background: rgba(255,255,255,0.05);
+    }
+
+.download {
+    text-decoration: none;
+}
+
+.controller {
+    border-top: 1px solid var(--border);
+}
+
+.controller-header {
+    padding: 12px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+.controller-content {
+    display: none;
+    padding: 10px 20px;
+}
+
+.method {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    cursor: pointer;
+    font-weight: normal;
+}
+
+    .method span {
+        font-weight: normal;
+    }
+
+.method-verb.GET {
+    color: var(--verb-get);
+}
+
+.method-verb.POST {
+    color: var(--verb-post);
+}
+
+.method-verb.PUT {
+    color: var(--verb-put);
+}
+
+.method-verb.DELETE {
+    color: var(--verb-delete);
+}
+
+.method-verb.PATCH {
+    color: var(--verb-patch);
+}
+
+#content {
+    flex: 1 1 auto;
+    padding: 20px;
+    overflow-y: auto;
+}
+
+.endpoint-detail {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+}
+
+.endpoint-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.method-verb {
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: normal;
+    text-transform: uppercase;
+    font-size: 12px;
+    color: #fff;
+}
+
+.endpoint-path {
+    font-family: monospace;
+    font-size: 14px;
+    color: var(--fg);
+}
+
+.endpoint-summary {
+    font-size: 16px;
+    margin: 6px 0;
+}
+
+.endpoint-desc {
+    font-size: 14px;
+    margin-bottom: 10px;
+}
+
+.section h4 {
+    margin: 12px 0 6px 0;
+    font-size: 14px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+th, td {
+    border: 1px solid var(--border);
+    padding: 4px 8px;
+    text-align: left;
+}
+
+.raw-spec pre {
+    background: rgba(0,0,0,0.05);
+    padding: 10px;
+    border-radius: 6px;
+    overflow: auto;
+    font-family: monospace;
+    font-size: 13px;
+}

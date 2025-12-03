@@ -1,0 +1,44 @@
+﻿<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8" />
+    <title>API Docs</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+    <header id="app-header">
+        <div class="header-left">
+            <img class="logo" alt="Company Logo">
+            <h1>API Documentation</h1>
+            <span id="env-label"></span>
+        </div>
+        <button id="themeToggle" class="theme-btn" title="Toggle light/dark theme">🌗</button>
+    </header>
+    <div id="env-strip"></div>
+
+    <div id="layout">
+        <aside id="sidebar">
+            <div id="resize-bar"></div>
+            <nav id="menu">
+                <h3 class="menu-title">Navigation</h3>
+                <div class="menu-group">
+                    <button class="menu-item" data-view="operations">Endpoints</button>
+                    <button class="menu-item" data-view="formatted">Formatted Spec</button>
+                    <button class="menu-item" data-view="file">openapi.json File</button>
+                    <a class="menu-item download" href="./openapi.json" download>Download OpenAPI</a>
+                </div>
+                <hr />
+                <div id="controllers-container"></div>
+            </nav>
+        </aside>
+
+        <main id="content">
+            <div id="content-inner">Select an item from the left menu.</div>
+        </main>
+    </div>
+
+    <script src="viewer.js"></script>
+</body>
+</html>
