@@ -1,25 +1,28 @@
 ﻿@page "/"
 @using BlazorApp1.Components.Shared.Select
 
-<h3>Multi-Select Demo</h3>
-<MultiSelectCombo Items="@Fruits"
-                  Placeholder="Select fruits..."
-                  SelectedValues="@Selected"
-                  SelectedValuesChanged="@OnSelectedChanged"
-                  OnSelectionChanged="@OnSelectionChanged" />
+<h3>Multi-Select Combo with Expandable Dropdown</h3>
 
-<p>Selected:</p>
+<MultiSelectCombo TItem="string"
+                  Items="@options"
+                  SelectedValues="@selectedOptions"
+                  SelectedValuesChanged="@OnSelectionChanged"
+                  Placeholder="Choose your options:" />
+
+<p>You selected:</p>
 <ul>
-    @foreach (var s in Selected)
+    @foreach (var val in selectedOptions)
     {
-        <li>@s</li>
+        <li>@val</li>
     }
 </ul>
 
 @code {
-    private string[] Fruits = { "Apple", "Banana", "Cherry", "Orange" };
-    private string[] Selected = Array.Empty<string>();
+    private List<string> options = new() { "Option A", "Option B", "Option C", "Option D" };
+    private List<string> selectedOptions = new();
 
-    private void OnSelectedChanged(string[] values) => Selected = values;
-    private void OnSelectionChanged(string[] values) => Console.WriteLine("Changed: " + string.Join(", ", values));
+    private void OnSelectionChanged(List<string> newSelection)
+    {
+        selectedOptions = newSelection;
+    }
 }

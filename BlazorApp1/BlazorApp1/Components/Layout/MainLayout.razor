@@ -22,17 +22,3 @@
     <a href="" class="reload">Reload</a>
     <a class="dismiss">🗙</a>
 </div>
-@* ------------------ *@
-
-<div @onclick="HandleLayoutClick">
-    @Body
-</div>
-
-@code {
-    [CascadingParameter] private MultiSelectCombo? OpenCombo { get; set; }
-
-    private void HandleLayoutClick()
-    {
-        OpenCombo?.CloseDropdown();
-    }
-}

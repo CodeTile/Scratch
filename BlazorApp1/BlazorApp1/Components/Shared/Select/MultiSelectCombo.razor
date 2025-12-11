@@ -1,25 +1,29 @@
-﻿@inherits MultiSelectComboBase
+﻿@typeparam TItem
 
-<div class="combo-wrapper" @onclick:stopPropagation="true">
-    <div class="combo-container" @onclick="ToggleDropdown">
-        <span class="combo-display">@DisplayText</span>
-        <span class="combo-arrow">▼</span>
+<div class="multi-select-container">
+    <!-- Combo header -->
+    <div class="multi-select-combo" @onclick="ToggleDropdown">
+        @if (SelectedValues.Count == 0)
+        {
+            <span>@Placeholder</span>
+        }
+        else
+        {
+            <span>@string.Join(", ", SelectedValues)</span>
+        }
+        <span class="arrow">@((isOpen ? "▲" : "▼"))</span>
     </div>
 
-    @if (IsOpen)
+    <!-- Dropdown panel -->
+    @if (isOpen)
     {
-        <div class="combo-dropdown">
-            <div class="combo-actions">
-                <button class="combo-btn" @onclick="SelectAll">Select All</button>
-                <button class="combo-btn" @onclick="ClearAll">Clear</button>
-            </div>
-
+        <div class="multi-select-dropdown">
             @foreach (var item in Items)
             {
-                <label class="combo-option">
+                <label class="multi-select-option">
                     <input type="checkbox"
                            checked="@SelectedValues.Contains(item)"
-                           @onchange="(e) => OnItemChanged(item, e.Value)" />
+                           @onchange="() => ToggleSelection(item)" />
                     @item
                 </label>
             }
