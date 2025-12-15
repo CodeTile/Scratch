@@ -11,10 +11,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Update="wwwroot\asset\moon.png">
+    <Content Update="wwwroot\assets\moon.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Update="wwwroot\asset\sun.png">
+    <Content Update="wwwroot\assets\sun.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
