@@ -1,31 +1,15 @@
 ﻿@inherits LayoutComponentBase
-@using Microsoft.FluentUI.AspNetCore.Components
-<FluentToastProvider />
-<FluentDialogProvider />
-<FluentTooltipProvider />
-<FluentMessageBarProvider />
-<FluentMenuProvider />
 
 <div class="page">
-    <FluentDesignTheme StorageName="theme" @bind-Mode="Mode" />
     <div class="sidebar">
         <NavMenu />
     </div>
 
     <main>
         <div class="top-row px-4">
-
-            <FluentSwitch Checked="@(Mode == DesignThemeModes.Dark)" CheckedChanged="ToggleTheme">
-                <div style="display:flex;align-items:center;gap:8px;">
-                    <img src="@(Mode == DesignThemeModes.Dark ? "assets/moon.png" : "assets/sun.png")"
-                         alt="Theme Icon"
-                         style="width:20px;height:20px;" />
-                    @(Mode == DesignThemeModes.Dark ? "Dark Mode" : "Light Mode")
-                </div>
-            </FluentSwitch>
             <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
         </div>
-        
+
         <article class="content px-4">
             @Body
         </article>
@@ -37,30 +21,3 @@
     <a href="" class="reload">Reload</a>
     <a class="dismiss">🗙</a>
 </div>
-@code {
-    private DesignThemeModes _mode = DesignThemeModes.System;
-
-    public DesignThemeModes Mode
-    {
-        get => _mode;
-        set
-        {
-            if (_mode != value)
-            {
-                _mode = value;
-                OnModeChanged();
-            }
-        }
-    }
-
-    private void ToggleTheme(bool isDark)
-    {
-        Mode = isDark ? DesignThemeModes.Dark : DesignThemeModes.Light;
-    }
-
-    private void OnModeChanged()
-    {
-        // Optional: add extra logic when theme changes
-        Console.WriteLine($"Theme changed to: {Mode}");
-    }
-}
