@@ -1,22 +1,23 @@
 ﻿@using Microsoft.AspNetCore.Components
 @using MudBlazor
-@using DonutChartSolution
+@using DonutChartSolution.Components.Shared
 
 <div class="donut-chart-container" style="width:@Width; height:@Height;">
     <p class="donut-title">@Title</p>
-<MudChart ChartType="ChartType.Donut"
-          Width="@Width"
-          Height="@Height"
-          InputData="@DataValues"
-          InputLabels="@DataLabels"
-          @bind-SelectedIndex="@SelectedIndex">
 
+    <MudChart ChartType="ChartType.Donut"
+              Width="@Width"
+              Height="@Height"
+              InputData="@DataValues"
+              InputLabels="@DataLabels"
+              @bind-SelectedIndex="@SelectedIndex">
         <CustomGraphics>
             <text class="donut-inner-text" x="50%" y="45%" dominant-baseline="middle" text-anchor="middle"
                   @onclick="OnCenterClick">@InnerLabel</text>
             <text class="donut-inner-text" x="50%" y="55%" dominant-baseline="middle" text-anchor="middle"
-                  @onclick="OnCenterClick">@Data.Sum(kv => kv.Value)</text>
+                  @onclick="OnCenterClick">@TotalValue</text>
         </CustomGraphics>
     </MudChart>
-    <div class="donut-tooltip">Click a slice to navigate</div>
+
+    <div class="donut-tooltip">Click a slice to navigate, or click center for weather</div>
 </div>

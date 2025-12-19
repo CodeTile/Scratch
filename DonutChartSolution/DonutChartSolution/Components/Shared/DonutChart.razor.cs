@@ -18,37 +18,27 @@ namespace DonutChartSolution.Components.Shared
 		[Inject] NavigationManager Navigation { get; set; }
 
 		/// <summary>
-		/// Index of the clicked slice
+		/// Index of clicked slice
 		/// </summary>
 		public int SelectedIndex { get; set; } = -1;
 
 		/// <summary>
-		/// Values for the chart slices
+		/// Values for MudChart
 		/// </summary>
 		public double[] DataValues => Data.Select(kv => (double)kv.Value).ToArray();
 
 		/// <summary>
-		/// Labels for the chart slices
+		/// Labels for MudChart
 		/// </summary>
 		public string[] DataLabels => Data.Select(kv => kv.Key).ToArray();
 
 		/// <summary>
-		/// Called when parameters are set; used to navigate on slice click
+		/// Sum of all values for the center label
 		/// </summary>
-		protected override void OnParametersSet()
-		{
-			if (SelectedIndex >= 0)
-			{
-				// Navigate to /counter when a slice is clicked
-				Navigation.NavigateTo("/counter");
-
-				// Reset selection so repeated clicks work
-				SelectedIndex = -1;
-			}
-		}
+		public int TotalValue => Data.Sum(kv => kv.Value);
 
 		/// <summary>
-		/// Called when the user clicks the center text
+		/// Navigate to /weather when the center is clicked
 		/// </summary>
 		public void OnCenterClick()
 		{
@@ -56,8 +46,15 @@ namespace DonutChartSolution.Components.Shared
 		}
 
 		/// <summary>
-		/// Returns the sum of all values (for inner label display)
+		/// Called on parameter update; navigate to /counter if a slice was clicked
 		/// </summary>
-		public int TotalValue => Data.Sum(kv => kv.Value);
+		protected override void OnParametersSet()
+		{
+			if (SelectedIndex >= 0)
+			{
+				Navigation.NavigateTo("/counter");
+				SelectedIndex = -1; // Reset for future clicks
+			}
+		}
 	}
 }

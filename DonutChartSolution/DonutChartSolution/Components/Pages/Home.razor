@@ -9,8 +9,7 @@ Welcome to your new app.
 
 <DonutChart Title="Energy Sources" InnerLabel="Total Energy"
             Data="@energyData"
-            Width="400px" Height="400px"
-            OnSliceClick="NavigateToDetail">
+            Width="400px" Height="400px">
 </DonutChart>
 
 @code {
@@ -22,9 +21,5 @@ Welcome to your new app.
         new KeyValuePair<string,int>("BioMass", 10)
     };
 
-    private void NavigateToDetail(string slice)
-    {
-        // Navigation logic
-        Console.WriteLine($"Navigating to {slice}");
-    }
+  
 }
