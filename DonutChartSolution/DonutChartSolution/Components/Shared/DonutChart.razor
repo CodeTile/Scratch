@@ -10,16 +10,17 @@
               Height="@Height"
               InputData="@DataValues"
               InputLabels="@DataLabels"
-              LegendPosition="Position.Bottom"
+              LegendPosition="Position.Right"
+              ShowLegend="false"
               @bind-SelectedIndex="@SelectedIndex">
         <CustomGraphics>
             <text class="donut-inner-text" x="50%" y="45%" dominant-baseline="middle" text-anchor="middle"
                   @onclick="OnCenterClick">@InnerLabel</text>
-            <text class="donut-inner-text" x="50%" y="55%" dominant-baseline="middle" text-anchor="middle"
+            <text class="donut-inner-value" x="50%" y="55%" dominant-baseline="middle" text-anchor="middle"
 
                   @onclick="OnCenterClick">@TotalValue</text>
         </CustomGraphics>
     </MudChart>
 
-    <div class="donut-tooltip">Click a slice to navigate, or click center for weather</div>
+    @* <div class="donut-tooltip">Click a slice to navigate, or click center for weather</div> *@
 </div>
