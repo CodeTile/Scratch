@@ -1,10 +1,5 @@
 ﻿using Microsoft.AspNetCore.Components;
 
-using MudBlazor;
-
-using System.Collections.Generic;
-using System.Linq;
-
 namespace DonutChartSolution.Components.Shared
 {
 	public partial class DonutChart : ComponentBase
