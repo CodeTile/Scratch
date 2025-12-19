@@ -1,0 +1,27 @@
+﻿.donut-chart-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.donut-title {
+    font-size: 1.5rem;
+    font-weight: bold; /* weight */
+    color: #2c3e50; /* title color */
+    margin-bottom: 10px;
+}
+
+.donut-inner-text {
+    font-size: 1.2rem;
+    fill: #e74c3c; /* inner text color */
+    cursor: pointer;
+}
+
+.donut-tooltip {
+    font-size: 0.9rem;
+    color: #34495e;
+    margin-top: 10px;
+}
+
+/* Size configurable via inline style from component */

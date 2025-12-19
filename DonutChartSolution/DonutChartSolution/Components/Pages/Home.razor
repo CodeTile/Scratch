@@ -1,0 +1,30 @@
+﻿@page "/"
+@using DonutChartSolution.Components.Shared
+
+<PageTitle>Home</PageTitle>
+
+<h1>Hello, world!</h1>
+
+Welcome to your new app.
+
+<DonutChart Title="Energy Sources" InnerLabel="Total Energy"
+            Data="@energyData"
+            Width="400px" Height="400px"
+            OnSliceClick="NavigateToDetail">
+</DonutChart>
+
+@code {
+    private IEnumerable<KeyValuePair<string, int>> energyData = new[]
+    {
+        new KeyValuePair<string,int>("Gas", 100),
+        new KeyValuePair<string,int>("Wind", 200),
+        new KeyValuePair<string,int>("Solar", 250),
+        new KeyValuePair<string,int>("BioMass", 10)
+    };
+
+    private void NavigateToDetail(string slice)
+    {
+        // Navigation logic
+        Console.WriteLine($"Navigating to {slice}");
+    }
+}

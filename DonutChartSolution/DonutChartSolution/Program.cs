@@ -1,13 +1,10 @@
-using FluentUiDarkMode.Components;
-
-using Microsoft.FluentUI.AspNetCore.Components;
+using DonutChartSolution.Components;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
-builder.Services.AddFluentUIComponents();
 
 var app = builder.Build();
 
