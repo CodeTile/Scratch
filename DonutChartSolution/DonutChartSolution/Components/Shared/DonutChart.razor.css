@@ -7,29 +7,27 @@
     font-weight: bold;
     color: #2c3e50;
     text-align: center;
-    margin-bottom: 2px;
+    /* control spacing */
+    margin-top: 0px; /* distance from top of container */
+    margin-bottom: 1px; /* distance from donut chart */
 }
 
 
-.donut-inner-text {
-    font-size: 1.2rem;
-    font-weight: bold;
-    fill: #e74c3c; /* inner text color */
-    cursor: pointer;
-}
-
-
-.donut-inner-text {
+/* Inner label (smaller text) */
+.donut-inner-label {
     font-size: 1.2rem;
     font-weight: normal;
-    fill: #e74c3c; /* inner text color */
+    fill: #e74c3c;
     cursor: pointer;
 }
 
-.donut-tooltip {
-    font-size: 0.9rem;
-    color: #34495e;
-    margin-top: 10px;
+/* Inner value (larger text) */
+.donut-inner-value {
+    font-size: 3.4rem;
+    font-weight: bold;
+    fill: #e74c3c;
+    cursor: pointer;
 }
+
 
 /* Size configurable via inline style from component */

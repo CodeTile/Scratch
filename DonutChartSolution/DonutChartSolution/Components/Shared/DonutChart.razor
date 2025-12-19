@@ -3,6 +3,7 @@
 @using DonutChartSolution.Components.Shared
 
 <div class="donut-chart-container" style="width:@Width; height:@Height;">
+    <!-- Title above the chart -->
     <p class="donut-title">@Title</p>
 
     <MudChart ChartType="ChartType.Donut"
@@ -10,17 +11,15 @@
               Height="@Height"
               InputData="@DataValues"
               InputLabels="@DataLabels"
-              LegendPosition="Position.Right"
-              ShowLegend="false"
-              @bind-SelectedIndex="@SelectedIndex">
+              @bind-SelectedIndex="@SelectedIndex"
+              ChartOptions="@DonutOptions">
         <CustomGraphics>
-            <text class="donut-inner-text" x="50%" y="45%" dominant-baseline="middle" text-anchor="middle"
+            <!-- Inner label (clickable) -->
+            <text class="donut-inner-text" x="50%" y="40%" dominant-baseline="middle" text-anchor="middle"
                   @onclick="OnCenterClick">@InnerLabel</text>
             <text class="donut-inner-value" x="50%" y="55%" dominant-baseline="middle" text-anchor="middle"
-
                   @onclick="OnCenterClick">@TotalValue</text>
         </CustomGraphics>
     </MudChart>
 
-    @* <div class="donut-tooltip">Click a slice to navigate, or click center for weather</div> *@
 </div>

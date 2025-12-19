@@ -1,5 +1,10 @@
 ﻿using Microsoft.AspNetCore.Components;
 
+using MudBlazor;
+
+using System.Collections.Generic;
+using System.Linq;
+
 namespace DonutChartSolution.Components.Shared
 {
 	public partial class DonutChart : ComponentBase
@@ -9,6 +14,7 @@ namespace DonutChartSolution.Components.Shared
 		[Parameter] public IEnumerable<KeyValuePair<string, int>> Data { get; set; } = new List<KeyValuePair<string, int>>();
 		[Parameter] public string Width { get; set; } = "300px";
 		[Parameter] public string Height { get; set; } = "300px";
+		[Parameter] public string TitleBottomMargin { get; set; } = "2px"; // gap between title and donut
 
 		[Inject] NavigationManager Navigation { get; set; }
 
@@ -18,22 +24,22 @@ namespace DonutChartSolution.Components.Shared
 		public int SelectedIndex { get; set; } = -1;
 
 		/// <summary>
-		/// Values for MudChart
+		/// Values for the chart
 		/// </summary>
 		public double[] DataValues => Data.Select(kv => (double)kv.Value).ToArray();
 
 		/// <summary>
-		/// Labels for MudChart
+		/// Labels for the chart
 		/// </summary>
 		public string[] DataLabels => Data.Select(kv => kv.Key).ToArray();
 
 		/// <summary>
-		/// Sum of all values for the center label
+		/// Sum of values for inner display
 		/// </summary>
 		public int TotalValue => Data.Sum(kv => kv.Value);
 
 		/// <summary>
-		/// Navigate to /weather when the center is clicked
+		/// Navigate to /weather on center click
 		/// </summary>
 		public void OnCenterClick()
 		{
@@ -41,14 +47,22 @@ namespace DonutChartSolution.Components.Shared
 		}
 
 		/// <summary>
-		/// Called on parameter update; navigate to /counter if a slice was clicked
+		/// ChartOptions to hide legend
+		/// </summary>
+		public ChartOptions DonutOptions { get; set; } = new ChartOptions
+		{
+			ShowLegend = true,
+		};
+
+		/// <summary>
+		/// Handle slice click
 		/// </summary>
 		protected override void OnParametersSet()
 		{
 			if (SelectedIndex >= 0)
 			{
 				Navigation.NavigateTo("/counter");
-				SelectedIndex = -1; // Reset for future clicks
+				SelectedIndex = -1; // reset for future clicks
 			}
 		}
 	}
