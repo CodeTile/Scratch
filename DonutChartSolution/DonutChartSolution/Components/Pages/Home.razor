@@ -2,10 +2,19 @@
 @using DonutChartSolution.Components.Shared
 @inject NavigationManager Nav
 
+@*
+    <summary>
+    Demonstrates usage of the DonutChart component with:
+    - Donut mode (Sales by Region)
+    - Pie mode (Task Breakdown)
+    Handles navigation when slices or donut center are clicked.
+    </summary>
+*@
 <h3>Donut Chart Demo</h3>
 
 <div style="display:flex; gap:40px; flex-wrap:wrap;">
 
+    @* Donut chart example *@
     <DonutChart Title="Sales by Region"
                 InnerTitle="Total Sales"
                 IsDonut="true"
@@ -16,6 +25,7 @@
                 OnSliceSelected="HandleSliceClickAsync"
                 OnCenterSelected="HandleCenterClickAsync" />
 
+    @* Pie chart example *@
     <DonutChart Title="Task Breakdown"
                 InnerTitle="Tasks"
                 IsDonut="false"
@@ -26,6 +36,9 @@
 </div>
 
 @code {
+    /// <summary>
+    /// Sample sales data for the donut chart.
+    /// </summary>
     private Dictionary<string, int> SalesData = new()
     {
         ["North"] = 120,
@@ -34,6 +47,9 @@
         ["West"] = 60
     };
 
+    /// <summary>
+    /// Sample task breakdown data for the pie chart.
+    /// </summary>
     private IEnumerable<KeyValuePair<string, int>> TaskItems =
         new List<KeyValuePair<string, int>>
         {
@@ -42,14 +58,21 @@
             new("Blocked", 5)
         };
 
-    private void HandleCenterClickAsync()
-    {
-        Nav.NavigateTo("/summary");
-    }
-
+    /// <summary>
+    /// Handles slice clicks and navigates to the Counter page.
+    /// </summary>
     private void HandleSliceClickAsync(string label)
     {
+        Console.WriteLine($"[Home] Slice clicked: {label}");
         Nav.NavigateTo("/counter");
     }
 
+    /// <summary>
+    /// Handles donut center clicks and navigates to the Weather page.
+    /// </summary>
+    private void HandleCenterClickAsync()
+    {
+        Console.WriteLine("[Home] Center clicked");
+        Nav.NavigateTo("/weather");
+    }
 }
