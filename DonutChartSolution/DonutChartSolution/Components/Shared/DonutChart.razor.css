@@ -1,36 +1,35 @@
-﻿.donut-chart-wrapper {
+﻿/* Wrapper centers the chart */
+.donut-chart-wrapper {
     display: flex;
     justify-content: center;
     align-items: center;
-    padding:20px;
 }
 
+/* Container holds the chart and the center overlay */
 .donut-chart-container {
     position: relative;
     width: 300px;
     height: 300px;
     padding-top: 1rem;
-    background-color: dodgerblue !important;
+    background-color: transparent !important;
 }
 
-.donut-title {
-    text-align: center;
-    font-size: 1.2rem;
-    margin-bottom: 0.5rem;
-}
 
+/* Force MudChart SVG to fill the container */
 .donut-chart {
     width: 100% !important;
     height: 100% !important;
 }
 
+/* Center overlay */
 .donut-center-group {
     position: absolute;
-    top: calc(50% + 0.5rem); /* compensate for title height */
+    top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
     text-align: center;
     cursor: pointer;
+    pointer-events: auto;
 }
 
 .donut-inner-title {
