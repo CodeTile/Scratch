@@ -1,5 +1,4 @@
 ﻿using Microsoft.AspNetCore.Components;
-using Microsoft.AspNetCore.Components.Web;
 using Microsoft.JSInterop;
 
 using MudBlazor;
@@ -11,63 +10,109 @@ using System.Threading.Tasks;
 
 namespace DonutChartSolution.Components.Shared
 {
-	public partial class DonutChart : ComponentBase
+	/// <summary>
+	/// A reusable donut chart component that supports:
+	/// - MudBlazor donut rendering
+	/// - Clickable center navigation
+	/// - JS-enabled slice click navigation
+	/// </summary>
+	public partial class DonutChart : ComponentBase, IAsyncDisposable
 	{
-		private MudChart? _chartRef;
+		private IJSObjectReference? _jsModule;
+		private MudChart? _chart;
 
-		[Inject] public NavigationManager NavigationManager { get; set; } = default!;
-		[Inject] public IJSRuntime JS { get; set; } = default!;
+		/// <summary>
+		/// The title displayed above the chart and inside the donut center.
+		/// </summary>
+		[Parameter] public string Title { get; set; } = string.Empty;
 
-		// Unique ID for the wrapper div
-		protected string ChartContainerId { get; } = "donut-chart-" + Guid.NewGuid().ToString("N");
+		/// <summary>
+		/// The primary data source for the donut chart.
+		/// </summary>
+		[Parameter] public IEnumerable<KeyValuePair<string, int>>? Data { get; set; }
 
-		private IEnumerable<KeyValuePair<string, int>> _data = Enumerable.Empty<KeyValuePair<string, int>>();
+		/// <summary>
+		/// Optional dictionary-based data source.
+		/// </summary>
+		[Parameter] public Dictionary<string, int>? DataDictionary { get; set; }
 
-		[Parameter]
-		public IEnumerable<KeyValuePair<string, int>>? Data
-		{
-			get => _data;
-			set => _data = value ?? Enumerable.Empty<KeyValuePair<string, int>>();
-		}
+		/// <summary>
+		/// Optional label displayed inside the donut center.
+		/// Defaults to the chart title if not provided.
+		/// </summary>
+		[Parameter] public string? InnerLabel { get; set; }
 
-		[Parameter]
-		public Dictionary<string, int>? DataDictionary
-		{
-			get => _data.ToDictionary(k => k.Key, v => v.Value);
-			set
-			{
-				if (value != null)
-					_data = value;
-			}
-		}
+		[Inject] private NavigationManager NavigationManager { get; set; } = default!;
+		[Inject] private IJSRuntime JS { get; set; } = default!;
 
-		[Parameter] public string Title { get; set; } = "Donut Chart";
-		[Parameter] public string InnerLabel { get; set; } = "Total";
-		[Parameter] public string CenterTooltipText { get; set; } = "Click to view weather";
-		[Parameter] public string Width { get; set; } = "400px";
-		[Parameter] public string Height { get; set; } = "400px";
+		/// <summary>
+		/// Unique DOM ID used to attach JS event handlers.
+		/// </summary>
+		public string ChartContainerId { get; } = $"donut-chart-{Guid.NewGuid():N}";
 
-		public double[] DataValues => _data.Select(kv => (double)kv.Value).ToArray();
-		public string[] DataLabels => _data.Select(kv => kv.Key).ToArray();
-		public int TotalValue => _data.Sum(kv => kv.Value);
+		/// <summary>
+		/// Returns the merged data source as a double array for MudBlazor.
+		/// </summary>
+		public double[] DataValues =>
+			(DataDictionary ?? Data ?? Enumerable.Empty<KeyValuePair<string, int>>())
+			.Select(kv => (double)kv.Value)
+			.ToArray();
 
-		protected override async Task OnAfterRenderAsync(bool firstRender)
-		{
-			if (firstRender)
-			{
-				await JS.InvokeVoidAsync("donutChart.registerSliceClicks", ChartContainerId);
-			}
-		}
+		/// <summary>
+		/// Returns the labels for the donut chart.
+		/// </summary>
+		public string[] DataLabels =>
+			(DataDictionary ?? Data ?? Enumerable.Empty<KeyValuePair<string, int>>())
+			.Select(kv => kv.Key)
+			.ToArray();
 
-		private void OnCenterClick(MouseEventArgs _)
+		/// <summary>
+		/// The total of all values, displayed in the donut center.
+		/// </summary>
+		public int Total => DataValues.Sum(v => (int)v);
+
+		/// <summary>
+		/// Handles the center click and navigates to the weather page.
+		/// </summary>
+		private void OnCenterClick()
 		{
 			NavigationManager.NavigateTo("/weather");
 		}
 
+		/// <summary>
+		/// JS-invokable method called when a donut slice is clicked.
+		/// </summary>
+		/// <param name="index">The index of the clicked slice.</param>
 		[JSInvokable]
 		public void SliceClicked(int _)
 		{
 			NavigationManager.NavigateTo("/counter");
+		}
+
+		/// <summary>
+		/// Loads the JS module and registers slice click handlers on first render.
+		/// </summary>
+		protected override async Task OnAfterRenderAsync(bool firstRender)
+		{
+			if (firstRender)
+			{
+				_jsModule = await JS.InvokeAsync<IJSObjectReference>(
+					"import", "/donutchart.js");
+
+				await _jsModule.InvokeVoidAsync(
+					"registerSliceClicks", ChartContainerId);
+			}
+		}
+
+		/// <summary>
+		/// Disposes the JS module when the component is removed.
+		/// </summary>
+		public async ValueTask DisposeAsync()
+		{
+			if (_jsModule is not null)
+			{
+				await _jsModule.DisposeAsync();
+			}
 		}
 	}
 }

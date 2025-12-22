@@ -1,52 +1,40 @@
-﻿.donut-chart-container {
-    display: inline-block;
-    padding: 12px;
-    text-align: center;
+﻿/* Wrapper centers the chart */
+.donut-chart-wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
 }
 
-.donut-title {
-    font-size: 1.4rem;
-    font-weight: 600;
-    margin-bottom: 8px;
-    color: #424242;
+/* Container holds the chart and the center overlay */
+.donut-chart-container {
+    position: relative;
+    width: 300px; /* You can adjust or make responsive */
+    height: 300px;
 }
 
+/* Force MudChart SVG to fill the container */
 .donut-chart {
-    margin: 0 auto;
+    width: 100% !important;
+    height: 100% !important;
 }
 
-/* Inner title */
+/* Center overlay */
+.donut-center-group {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
 .donut-inner-title {
     font-size: 1rem;
-    font-weight: 600;
-    fill: #616161;
+    font-weight: bold;
 }
 
-/* Inner value */
 .donut-inner-text {
-    font-size: 1.2rem;
-    font-weight: 700;
-    fill: #212121;
+    font-size: 1.4rem;
+    font-weight: bold;
 }
-
-/* Center hover */
-.donut-center-group {
-    cursor: pointer;
-}
-
-    .donut-center-group:hover .donut-inner-title,
-    .donut-center-group:hover .donut-inner-text {
-        fill: #1976d2;
-    }
-
-/* Slice hover */
-.donut-chart svg path {
-    cursor: pointer;
-    transition: transform 0.15s ease-out, opacity 0.15s ease-out;
-    transform-origin: center;
-}
-
-    .donut-chart svg path:hover {
-        opacity: 0.85;
-        transform: scale(1.03);
-    }
