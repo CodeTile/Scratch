@@ -1,27 +1,28 @@
 ﻿@page "/"
 @using DonutChartSolution.Components.Shared
+@inject NavigationManager Nav
 
 <h3>Donut Chart Demo</h3>
 
 <div style="display:flex; gap:40px; flex-wrap:wrap;">
 
-    <!-- Donut version -->
     <DonutChart Title="Sales by Region"
                 InnerTitle="Total Sales"
                 IsDonut="true"
                 Width="220"
-                Height="300" 
+                Height="300"
                 Thickness="20"
-                Data="@SalesData" />
+                Data="@SalesData"
+                OnSliceSelected="HandleSliceClickAsync"
+                OnCenterSelected="HandleCenterClickAsync" />
 
-    <!-- Pie version -->
     <DonutChart Title="Task Breakdown"
                 InnerTitle="Tasks"
                 IsDonut="false"
                 Width="320"
                 Height="320"
-                Items="@TaskItems" />
-
+                Items="@TaskItems"
+                OnSliceSelected="HandleSliceClickAsync" />
 </div>
 
 @code {
@@ -40,4 +41,15 @@
             new("In Progress", 15),
             new("Blocked", 5)
         };
+
+    private void HandleCenterClickAsync()
+    {
+        Nav.NavigateTo("/summary");
+    }
+
+    private void HandleSliceClickAsync(string label)
+    {
+        Nav.NavigateTo("/counter");
+    }
+
 }

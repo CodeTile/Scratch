@@ -1,6 +1,5 @@
 ﻿@rendermode InteractiveServer
 @namespace DonutChartSolution.Components.Shared
-@inject NavigationManager Navigation
 
 <div class="donut-chart-container">
 
@@ -12,14 +11,12 @@
 
         @if (!string.IsNullOrWhiteSpace(Title))
         {
-            <g>
-                <text x="100"
-                      y="20"
-                      text-anchor="middle"
-                      class="donut-title">
-                    @Title
-                </text>
-            </g>
+            <svg:text x="100"
+                  y="20"
+                  text-anchor="middle"
+                  class="donut-title">
+                @Title
+            </svg:text>
         }
 
         <!-- Shift entire chart down by 20px -->
@@ -31,7 +28,7 @@
                     <path d="@slice.PathData"
                           fill="@slice.Color"
                           class="donut-slice"
-                          @onclick="() => OnSliceClick(slice)"
+                          @onclick="() => OnSliceClickAsync(slice)"
                           @onmouseover="() => OnSliceHover(slice)">
                     </path>
                 }
@@ -40,7 +37,7 @@
             @if (IsDonut)
             {
                 <g class="donut-center"
-                   @onclick="OnCenterClick"
+                   @onclick="OnCenterClickAsync"
                    @onmouseover="OnCenterHover">
 
                     <circle cx="100"
@@ -50,24 +47,20 @@
 
                     @if (!string.IsNullOrWhiteSpace(InnerTitle))
                     {
-                        <g>
-                            <text x="100"
-                                  y="95"
-                                  text-anchor="middle"
-                                  class="donut-inner-title">
-                                @InnerTitle
-                            </text>
-                        </g>
+                        <svg:text x="100"
+                              y="95"
+                              text-anchor="middle"
+                              class="donut-inner-title">
+                            @InnerTitle
+                        </svg:text>
                     }
 
-                    <g>
-                        <text x="100"
-                              y="115"
-                              text-anchor="middle"
-                              class="donut-inner-text">
-                            @TotalValue.ToString("N0")
-                        </text>
-                    </g>
+                    <svg:text x="100"
+                          y="115"
+                          text-anchor="middle"
+                          class="donut-inner-text">
+                        @TotalValue.ToString("N0")
+                    </svg:text>
                 </g>
             }
         </g>

@@ -1,9 +1,5 @@
 ﻿using Microsoft.AspNetCore.Components;
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-
 namespace DonutChartSolution.Components.Shared
 {
 	public partial class DonutChart : ComponentBase
@@ -43,6 +39,9 @@ namespace DonutChartSolution.Components.Shared
 
 		[Parameter] public string Width { get; set; } = "300";
 		[Parameter] public string Height { get; set; } = "300";
+
+		[Parameter] public EventCallback<string> OnSliceSelected { get; set; }
+		[Parameter] public EventCallback OnCenterSelected { get; set; }
 
 		private static readonly string[] DefaultColors =
 		{
@@ -129,15 +128,18 @@ namespace DonutChartSolution.Components.Shared
 		private static double DegreesToRadians(double degrees)
 			=> degrees * Math.PI / 180.0;
 
-		private void OnSliceClick(SliceInfo slice)
+		private async Task OnSliceClickAsync(SliceInfo slice)
 		{
-			Navigation.NavigateTo("/counter");
+			Console.WriteLine($"[DonutChart] Slice clicked: {slice.Label}");
+			if (OnSliceSelected.HasDelegate)
+				await OnSliceSelected.InvokeAsync(slice.Label);
 		}
 
-		private void OnCenterClick()
+		private async Task OnCenterClickAsync()
 		{
-			if (IsDonut)
-				Navigation.NavigateTo("/weather");
+			Console.WriteLine("[DonutChart] Center clicked");
+			if (IsDonut && OnCenterSelected.HasDelegate)
+				await OnCenterSelected.InvokeAsync();
 		}
 
 		private void OnSliceHover(SliceInfo slice)
