@@ -1,23 +1,29 @@
 ﻿@using MudBlazor
 
 <div class="donut-chart-wrapper">
-    <MudPaper Class="donut-chart-container"
+
+    <MudPaper Class="donut-chart-outer"
               Elevation="1"
               style="@Style">
 
         <div class="donut-title">@Title</div>
 
-        <MudChart @ref="_chart"
-                  ChartType="ChartType.Donut"
-                  InputData="DataValues"
-                  InputLabels="DataLabels"
-                  Class="donut-chart"
-                  id="@ChartContainerId" />
+        <div class="donut-chart-container">
 
-        <div class="donut-center-group" @onclick="OnCenterClick">
-            <div class="donut-inner-title">@((InnerLabel ?? Title))</div>
-            <div class="donut-inner-text">@Total</div>
+            <MudChart @ref="_chart"
+                      ChartType="ChartType.Donut"
+                      InputData="DataValues"
+                      InputLabels="DataLabels"
+                      Class="donut-chart"
+                      id="@ChartContainerId" />
+
+            <div class="donut-center-group" @onclick="OnCenterClick">
+                <div class="donut-inner-title">@InnerLabel</div>
+                <div class="donut-inner-text">@Total</div>
+            </div>
+
         </div>
 
     </MudPaper>
+
 </div>

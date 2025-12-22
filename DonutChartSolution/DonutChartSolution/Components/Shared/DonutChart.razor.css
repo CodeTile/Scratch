@@ -1,34 +1,49 @@
-﻿.donut-chart-wrapper {
+﻿/* Wrapper centers the whole control */
+.donut-chart-wrapper {
     display: flex;
     justify-content: center;
     align-items: center;
-    padding:20px;
 }
 
-.donut-chart-container {
-    position: relative;
-    width: 300px;
-    height: 300px;
-    padding-top: 1rem;
-    background-color: dodgerblue !important;
+/* Outer container (MudPaper) */
+.donut-chart-outer {
+    padding: 1rem; /* NEW: padding around the whole control */
+    background-color: transparent;
+    display: flex;
+    flex-direction: column;
+    align-items: center; /* NEW: centers the chart horizontally */
 }
 
+/* Title stays above the donut */
 .donut-title {
     text-align: center;
     font-size: 1.2rem;
     margin-bottom: 0.5rem;
 }
 
+/* Donut container holds ONLY the chart + overlay */
+.donut-chart-container {
+    position: relative;
+    width: 300px;
+    height: 300px;
+    display: flex;
+    justify-content: center; /* NEW: centers the chart horizontally */
+    align-items: center; /* NEW: centers the chart vertically */
+    padding: 1rem; /* NEW: padding inside the donut container */
+}
+
+/* Force MudChart SVG to fill the container */
 .donut-chart {
     width: 100% !important;
     height: 100% !important;
 }
 
+/* Center overlay is now perfectly aligned */
 .donut-center-group {
     position: absolute;
-    top: calc(50% + 0.5rem); /* compensate for title height */
+    top: 50%;
     left: 50%;
-    transform: translate(-50%, -50%);
+    transform: translate(-50%, -90%);
     text-align: center;
     cursor: pointer;
 }
@@ -41,4 +56,5 @@
 .donut-inner-text {
     font-size: 1.4rem;
     font-weight: bold;
+    margin-top: 0.25rem;
 }
