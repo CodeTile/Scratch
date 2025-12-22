@@ -1,41 +1,27 @@
 ﻿@using MudBlazor
-@using System.Collections.Generic
 
-<div id="@ChartContainerId" class="donut-chart-wrapper">
+<!--
+    DonutChart.razor
+    Renders a MudBlazor donut chart with:
+    - Configurable inner label
+    - Clickable center navigation
+    - JS-enabled slice click support
+-->
 
-    <MudPaper Class="donut-chart-container">
-
+<div class="donut-chart-wrapper">
+    <MudPaper Class="donut-chart-container" Elevation="1">
         <div class="donut-title">@Title</div>
 
-        <MudChart ChartType="ChartType.Donut"
-                  Width="@Width"
-                  Height="@Height"
-                  InputData="@DataValues"
-                  InputLabels="@DataLabels">
+        <MudChart @ref="_chart"
+                  ChartType="ChartType.Donut"
+                  InputData="DataValues"
+                  InputLabels="DataLabels"
+                  Class="donut-chart"
+                  id="@ChartContainerId" />
 
-
-            <CustomGraphics>
-                <g class="donut-center-group" @onclick="OnCenterClick">
-                    <title>@CenterTooltipText</title>
-
-                    <text class="donut-inner-title"
-                          x="50%" y="45%"
-                          dominant-baseline="middle"
-                          text-anchor="middle">
-                        @InnerLabel
-                    </text>
-
-                    <text class="donut-inner-text"
-                          x="50%" y="55%"
-                          dominant-baseline="middle"
-                          text-anchor="middle">
-                        @TotalValue
-                    </text>
-                </g>
-            </CustomGraphics>
-
-        </MudChart>
-
+        <div class="donut-center-group" @onclick="OnCenterClick">
+            <div class="donut-inner-title">@InnerLabel ?? @Title</div>
+            <div class="donut-inner-text">@Total</div>
+        </div>
     </MudPaper>
-
 </div>

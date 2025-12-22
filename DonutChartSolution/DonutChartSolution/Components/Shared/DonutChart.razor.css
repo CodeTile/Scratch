@@ -1,52 +1,52 @@
-﻿.donut-chart-container {
-    display: inline-block;
-    padding: 12px;
-    text-align: center;
+﻿/* -----------------------------------------------------------------------------
+   DonutChart.razor.css
+   Styles for the DonutChart component.
+----------------------------------------------------------------------------- */
+
+.donut-chart-wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.donut-chart-container {
+    position: relative;
+    padding: 1rem;
 }
 
 .donut-title {
-    font-size: 1.4rem;
-    font-weight: 600;
-    margin-bottom: 8px;
-    color: #424242;
+    text-align: center;
+    font-size: 1.2rem;
+    margin-bottom: 0.5rem;
 }
 
-.donut-chart {
-    margin: 0 auto;
+.donut-center-group {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    cursor: pointer;
 }
 
-/* Inner title */
 .donut-inner-title {
     font-size: 1rem;
-    font-weight: 600;
-    fill: #616161;
+    font-weight: bold;
 }
 
-/* Inner value */
 .donut-inner-text {
-    font-size: 1.2rem;
-    font-weight: 700;
-    fill: #212121;
+    font-size: 1.4rem;
+    font-weight: bold;
 }
-
-/* Center hover */
-.donut-center-group {
-    cursor: pointer;
+.donut-chart {
+    width: 100%;
+    max-width: 300px;
+    height: auto;
+    aspect-ratio: 1 / 1;
 }
-
-    .donut-center-group:hover .donut-inner-title,
-    .donut-center-group:hover .donut-inner-text {
-        fill: #1976d2;
-    }
-
-/* Slice hover */
-.donut-chart svg path {
-    cursor: pointer;
-    transition: transform 0.15s ease-out, opacity 0.15s ease-out;
-    transform-origin: center;
-}
-
-    .donut-chart svg path:hover {
-        opacity: 0.85;
-        transform: scale(1.03);
-    }
+/* Optional: make the wrapper center the chart */ 
+/*.donut-chart-wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}*/
