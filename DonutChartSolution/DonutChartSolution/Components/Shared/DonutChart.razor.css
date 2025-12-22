@@ -1,33 +1,52 @@
 ﻿.donut-chart-container {
-    position: relative;
+    display: inline-block;
+    padding: 12px;
+    text-align: center;
 }
 
 .donut-title {
-    font-size: 1.5rem;
-    font-weight: bold;
-    color: #2c3e50;
-    text-align: center;
-    /* control spacing */
-    margin-top: 0px; /* distance from top of container */
-    margin-bottom: 1px; /* distance from donut chart */
+    font-size: 1.4rem;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: #424242;
 }
 
+.donut-chart {
+    margin: 0 auto;
+}
 
-/* Inner label (smaller text) */
-.donut-inner-label {
+/* Inner title */
+.donut-inner-title {
+    font-size: 1rem;
+    font-weight: 600;
+    fill: #616161;
+}
+
+/* Inner value */
+.donut-inner-text {
     font-size: 1.2rem;
-    font-weight: normal;
-    fill: #e74c3c;
+    font-weight: 700;
+    fill: #212121;
+}
+
+/* Center hover */
+.donut-center-group {
     cursor: pointer;
 }
 
-/* Inner value (larger text) */
-.donut-inner-value {
-    font-size: 3.4rem;
-    font-weight: bold;
-    fill: #e74c3c;
+    .donut-center-group:hover .donut-inner-title,
+    .donut-center-group:hover .donut-inner-text {
+        fill: #1976d2;
+    }
+
+/* Slice hover */
+.donut-chart svg path {
     cursor: pointer;
+    transition: transform 0.15s ease-out, opacity 0.15s ease-out;
+    transform-origin: center;
 }
 
-
-/* Size configurable via inline style from component */
+    .donut-chart svg path:hover {
+        opacity: 0.85;
+        transform: scale(1.03);
+    }

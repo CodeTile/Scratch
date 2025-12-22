@@ -1,25 +1,41 @@
-﻿@using Microsoft.AspNetCore.Components
-@using MudBlazor
-@using DonutChartSolution.Components.Shared
+﻿@using MudBlazor
+@using System.Collections.Generic
 
-<div class="donut-chart-container" style="width:@Width; height:@Height;">
-    <!-- Title above the chart -->
-    <p class="donut-title">@Title</p>
+<div id="@ChartContainerId" class="donut-chart-wrapper">
 
-    <MudChart ChartType="ChartType.Donut"
-              Width="@Width"
-              Height="@Height"
-              InputData="@DataValues"
-              InputLabels="@DataLabels"
-              @bind-SelectedIndex="@SelectedIndex"
-              ChartOptions="@DonutOptions">
-        <CustomGraphics>
-            <!-- Inner label (clickable) -->
-            <text class="donut-inner-text" x="50%" y="40%" dominant-baseline="middle" text-anchor="middle"
-                  @onclick="OnCenterClick">@InnerLabel</text>
-            <text class="donut-inner-value" x="50%" y="55%" dominant-baseline="middle" text-anchor="middle"
-                  @onclick="OnCenterClick">@TotalValue</text>
-        </CustomGraphics>
-    </MudChart>
+    <MudPaper Class="donut-chart-container">
+
+        <div class="donut-title">@Title</div>
+
+        <MudChart ChartType="ChartType.Donut"
+                  Width="@Width"
+                  Height="@Height"
+                  InputData="@DataValues"
+                  InputLabels="@DataLabels">
+
+
+            <CustomGraphics>
+                <g class="donut-center-group" @onclick="OnCenterClick">
+                    <title>@CenterTooltipText</title>
+
+                    <text class="donut-inner-title"
+                          x="50%" y="45%"
+                          dominant-baseline="middle"
+                          text-anchor="middle">
+                        @InnerLabel
+                    </text>
+
+                    <text class="donut-inner-text"
+                          x="50%" y="55%"
+                          dominant-baseline="middle"
+                          text-anchor="middle">
+                        @TotalValue
+                    </text>
+                </g>
+            </CustomGraphics>
+
+        </MudChart>
+
+    </MudPaper>
 
 </div>

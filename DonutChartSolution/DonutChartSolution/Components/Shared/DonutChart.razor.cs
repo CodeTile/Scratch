@@ -1,69 +1,73 @@
 ﻿using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
+using Microsoft.JSInterop;
 
 using MudBlazor;
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace DonutChartSolution.Components.Shared
 {
 	public partial class DonutChart : ComponentBase
 	{
-		[Parameter] public string Title { get; set; } = "Donut Chart";
-		[Parameter] public string InnerLabel { get; set; } = "Total";
-		[Parameter] public IEnumerable<KeyValuePair<string, int>> Data { get; set; } = new List<KeyValuePair<string, int>>();
-		[Parameter] public string Width { get; set; } = "300px";
-		[Parameter] public string Height { get; set; } = "300px";
-		[Parameter] public string TitleBottomMargin { get; set; } = "2px"; // gap between title and donut
+		private MudChart? _chartRef;
 
-		[Inject] NavigationManager Navigation { get; set; }
+		[Inject] public NavigationManager NavigationManager { get; set; } = default!;
+		[Inject] public IJSRuntime JS { get; set; } = default!;
 
-		/// <summary>
-		/// Index of clicked slice
-		/// </summary>
-		public int SelectedIndex { get; set; } = -1;
+		// Unique ID for the wrapper div
+		protected string ChartContainerId { get; } = "donut-chart-" + Guid.NewGuid().ToString("N");
 
-		/// <summary>
-		/// Values for the chart
-		/// </summary>
-		public double[] DataValues => Data.Select(kv => (double)kv.Value).ToArray();
+		private IEnumerable<KeyValuePair<string, int>> _data = Enumerable.Empty<KeyValuePair<string, int>>();
 
-		/// <summary>
-		/// Labels for the chart
-		/// </summary>
-		public string[] DataLabels => Data.Select(kv => kv.Key).ToArray();
-
-		/// <summary>
-		/// Sum of values for inner display
-		/// </summary>
-		public int TotalValue => Data.Sum(kv => kv.Value);
-
-		/// <summary>
-		/// Navigate to /weather on center click
-		/// </summary>
-		public void OnCenterClick()
+		[Parameter]
+		public IEnumerable<KeyValuePair<string, int>>? Data
 		{
-			Navigation.NavigateTo("/weather");
+			get => _data;
+			set => _data = value ?? Enumerable.Empty<KeyValuePair<string, int>>();
 		}
 
-		/// <summary>
-		/// ChartOptions to hide legend
-		/// </summary>
-		public ChartOptions DonutOptions { get; set; } = new ChartOptions
+		[Parameter]
+		public Dictionary<string, int>? DataDictionary
 		{
-			ShowLegend = true,
-		};
-
-		/// <summary>
-		/// Handle slice click
-		/// </summary>
-		protected override void OnParametersSet()
-		{
-			if (SelectedIndex >= 0)
+			get => _data.ToDictionary(k => k.Key, v => v.Value);
+			set
 			{
-				Navigation.NavigateTo("/counter");
-				SelectedIndex = -1; // reset for future clicks
+				if (value != null)
+					_data = value;
 			}
+		}
+
+		[Parameter] public string Title { get; set; } = "Donut Chart";
+		[Parameter] public string InnerLabel { get; set; } = "Total";
+		[Parameter] public string CenterTooltipText { get; set; } = "Click to view weather";
+		[Parameter] public string Width { get; set; } = "400px";
+		[Parameter] public string Height { get; set; } = "400px";
+
+		public double[] DataValues => _data.Select(kv => (double)kv.Value).ToArray();
+		public string[] DataLabels => _data.Select(kv => kv.Key).ToArray();
+		public int TotalValue => _data.Sum(kv => kv.Value);
+
+		protected override async Task OnAfterRenderAsync(bool firstRender)
+		{
+			if (firstRender)
+			{
+				await JS.InvokeVoidAsync("donutChart.registerSliceClicks", ChartContainerId);
+			}
+		}
+
+		private void OnCenterClick(MouseEventArgs _)
+		{
+			NavigationManager.NavigateTo("/weather");
+		}
+
+		[JSInvokable]
+		public void SliceClicked(int _)
+		{
+			NavigationManager.NavigateTo("/counter");
 		}
 	}
 }
