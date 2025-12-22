@@ -1,6 +1,6 @@
-﻿@namespace DonutChartSolution.Components.Shared
+﻿@rendermode InteractiveServer
+@namespace DonutChartSolution.Components.Shared
 @inject NavigationManager Navigation
-@rendermode InteractiveServer
 
 <div class="donut-chart-container"
      style="--donut-thickness:@(Thickness ?? 40)">
@@ -13,7 +13,14 @@
 
         @if (!string.IsNullOrWhiteSpace(Title))
         {
-            @:<text x="100" y="20" text-anchor="middle" class="donut-title">@Title</text>
+            <g>
+                <text x="100"
+                      y="20"
+                      text-anchor="middle"
+                      class="donut-title">
+                    @Title
+                </text>
+            </g>
         }
 
         <g class="donut-slices">
@@ -34,17 +41,34 @@
 
             @if (IsDonut)
             {
-                <circle cx="100" cy="100" r="@InnerRadius" class="donut-center-circle"></circle>
+                <circle cx="100"
+                        cy="100"
+                        r="@InnerRadius"
+                        class="donut-center-circle" />
             }
 
             @if (!string.IsNullOrWhiteSpace(InnerTitle))
             {
-                @:<text x="100" y="95" text-anchor="middle" class="donut-inner-title">@InnerTitle</text>
+                <g>
+                    <text x="100"
+                          y="95"
+                          text-anchor="middle"
+                          class="donut-inner-title">
+                        @InnerTitle
+                    </text>
+                </g>
             }
 
             @if (!string.IsNullOrWhiteSpace(InnerText))
             {
-                @:<text x="100" y="115" text-anchor="middle" class="donut-inner-text">@InnerText</text>
+                <g>
+                    <text x="100"
+                          y="115"
+                          text-anchor="middle"
+                          class="donut-inner-text">
+                        @InnerText
+                    </text>
+                </g>
             }
         </g>
     </svg>

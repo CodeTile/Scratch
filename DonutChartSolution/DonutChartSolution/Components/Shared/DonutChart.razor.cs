@@ -26,7 +26,6 @@ namespace DonutChartSolution.Components.Shared
 
 		private double OuterRadius => 90;
 
-		// Thickness comes from CSS variable or parameter
 		[Parameter] public double? Thickness { get; set; }
 
 		private double InnerRadius =>
