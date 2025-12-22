@@ -22,22 +22,21 @@ namespace DonutChartSolution.Tests
 	[TestClass]
 	public class DonutChartTests
 	{
-		private Bunit.TestContext _ctx = null!;
-
+		private BunitContext _ctx = null!;
 		/// <summary>
 		/// Initializes a fresh bUnit test context before each test.
+		/// Registers MudBlazor services, NavigationManager, and JSInterop setup.
 		/// </summary>
 		[TestInitialize]
 		public void Setup()
 		{
-			_ctx = new Bunit.TestContext();
+			_ctx = new BunitContext();
 			_ctx.Services.AddMudServices();
 			_ctx.Services.AddSingleton<NavigationManager, TestNavigationManager>();
 
-			// Global JSInterop setup for all tests
-			_ctx.JSInterop.SetupVoid("donutChart.registerSliceClicks", _ => true);
+			// Global JSInterop setup for all DonutChart tests
+			_ctx.JSInterop.SetupDonutChartInterop();
 		}
-
 
 		/// <summary>
 		/// Disposes the bUnit test context after each test.
@@ -146,8 +145,6 @@ namespace DonutChartSolution.Tests
 		{
 			var nav = (TestNavigationManager)_ctx.Services.GetRequiredService<NavigationManager>();
 
-			_ctx.JSInterop.SetupVoid("donutChart.registerSliceClicks", _ => true);
-
 			var cut = _ctx.Render<DonutChart>(p => p
 				.Add(x => x.Data, new[]
 				{
@@ -157,8 +154,7 @@ namespace DonutChartSolution.Tests
 
 			cut.Find(".donut-center-group").Click();
 
-			var path = new Uri(nav.Uri).AbsolutePath;
-			path.ShouldBe("/weather");
+			new Uri(nav.Uri).AbsolutePath.ShouldBe("/weather");
 		}
 
 		/// <summary>
@@ -171,8 +167,6 @@ namespace DonutChartSolution.Tests
 		{
 			var nav = (TestNavigationManager)_ctx.Services.GetRequiredService<NavigationManager>();
 
-			_ctx.JSInterop.SetupVoid("donutChart.registerSliceClicks", _ => true);
-
 			var cut = _ctx.Render<DonutChart>(p => p
 				.Add(x => x.Data, new[]
 				{
@@ -181,12 +175,38 @@ namespace DonutChartSolution.Tests
 				})
 			);
 
-			// Simulate JS calling back into .NET
 			cut.Instance.SliceClicked(0);
 
-			var path = new Uri(nav.Uri).AbsolutePath;
-			path.ShouldBe("/counter");
+			new Uri(nav.Uri).AbsolutePath.ShouldBe("/counter");
 		}
+
+		// --------------------------------------------------------------------
+		// JSInterop Verification
+		// --------------------------------------------------------------------
+
+		/// <summary>
+		/// Ensures the JS function donutChart.registerSliceClicks is invoked exactly once.
+		/// </summary>
+		[TestMethod]
+		[TestCategory("JSInterop")]
+		public void DonutChart_RegistersSliceClicks_Once()
+		{
+			var js = _ctx.JSInterop.SetupVoid("donutChart.registerSliceClicks", _ => true);
+
+			_ctx.Render<DonutChart>(p => p
+				.Add(x => x.Data, new[]
+				{
+			new KeyValuePair<string,int>("Gas",100)
+				})
+			);
+
+			// Assert JS was called exactly once
+			js.Invocations.Count.ShouldBe(1);
+
+			// Assert the correct JS function was invoked
+			js.VerifyInvoke("donutChart.registerSliceClicks");
+		}
+
 
 		// --------------------------------------------------------------------
 		// CSS Tests
@@ -199,8 +219,6 @@ namespace DonutChartSolution.Tests
 		[TestCategory("CSS")]
 		public void DonutChart_HasRequiredCssClasses()
 		{
-			_ctx.JSInterop.SetupVoid("donutChart.registerSliceClicks", _ => true);
-
 			var cut = _ctx.Render<DonutChart>(p => p
 				.Add(x => x.Data, new[]
 				{
