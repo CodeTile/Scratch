@@ -1,8 +1,4 @@
-﻿:root {
-    --donut-thickness: 40;
-}
-
-.donut-chart-container {
+﻿.donut-chart-container {
     position: relative;
     display: inline-block;
 }
@@ -12,7 +8,7 @@
 }
 
 .donut-title {
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 600;
     fill: #333;
 }
@@ -24,8 +20,8 @@
 }
 
 .donut-inner-text {
-    font-size: 10px;
-    fill: #666;
+    font-size: 11px;
+    fill: #444;
 }
 
 .donut-slice {

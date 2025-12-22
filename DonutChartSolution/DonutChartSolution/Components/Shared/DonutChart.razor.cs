@@ -31,6 +31,8 @@ namespace DonutChartSolution.Components.Shared
 		private double InnerRadius =>
 			IsDonut ? OuterRadius - (Thickness ?? 40) : 0;
 
+		private int TotalValue => Slices.Sum(s => s.Value);
+
 		[Parameter] public IEnumerable<KeyValuePair<string, int>>? Items { get; set; }
 		[Parameter] public Dictionary<string, int>? Data { get; set; }
 
@@ -38,7 +40,6 @@ namespace DonutChartSolution.Components.Shared
 
 		[Parameter] public string? Title { get; set; }
 		[Parameter] public string? InnerTitle { get; set; }
-		[Parameter] public string? InnerText { get; set; }
 
 		[Parameter] public string Width { get; set; } = "300";
 		[Parameter] public string Height { get; set; } = "300";
@@ -135,20 +136,23 @@ namespace DonutChartSolution.Components.Shared
 
 		private void OnCenterClick()
 		{
-			Navigation.NavigateTo("/weather");
+			if (IsDonut)
+				Navigation.NavigateTo("/weather");
 		}
 
 		private void OnSliceHover(SliceInfo slice)
 		{
 			TooltipLabel = slice.Label;
-			TooltipValue = slice.Value.ToString();
+			TooltipValue = slice.Value.ToString("N0");
 			ShowTooltip = true;
 		}
 
 		private void OnCenterHover()
 		{
+			if (!IsDonut) return;
+
 			TooltipLabel = InnerTitle ?? "Total";
-			TooltipValue = Slices.Sum(s => s.Value).ToString();
+			TooltipValue = TotalValue.ToString("N0");
 			ShowTooltip = true;
 		}
 
