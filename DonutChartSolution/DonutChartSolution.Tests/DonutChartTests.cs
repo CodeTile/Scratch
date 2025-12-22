@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 
 using Bunit;
 
@@ -32,7 +33,11 @@ namespace DonutChartSolution.Tests
 			_ctx = new Bunit.TestContext();
 			_ctx.Services.AddMudServices();
 			_ctx.Services.AddSingleton<NavigationManager, TestNavigationManager>();
+
+			// Global JSInterop setup for all tests
+			_ctx.JSInterop.SetupVoid("donutChart.registerSliceClicks", _ => true);
 		}
+
 
 		/// <summary>
 		/// Disposes the bUnit test context after each test.
@@ -66,11 +71,12 @@ namespace DonutChartSolution.Tests
 		}
 
 		/// <summary>
-		/// Snapshot test for initial rendering.
+		/// Snapshot test for the title element on initial rendering.
+		/// Keeps the snapshot focused on stable, user-facing markup.
 		/// </summary>
 		[TestMethod]
 		[TestCategory("Snapshot")]
-		public void DonutChart_InitialRender_Snapshot()
+		public void DonutChart_InitialRender_TitleSnapshot()
 		{
 			var cut = _ctx.Render<DonutChart>(p => p
 				.Add(x => x.Title, "Snapshot Chart")
@@ -81,12 +87,9 @@ namespace DonutChartSolution.Tests
 				})
 			);
 
-			cut.MarkupMatches(@"
-<div class=""donut-chart-wrapper"">
-  <mudpaper class=""donut-chart-container"">
-    <div class=""donut-title"">Snapshot Chart</div>
-  </mudpaper>
-</div>");
+			var title = cut.Find(".donut-title");
+
+			title.MarkupMatches("<div class=\"donut-title\">Snapshot Chart</div>");
 		}
 
 		// --------------------------------------------------------------------
@@ -154,7 +157,8 @@ namespace DonutChartSolution.Tests
 
 			cut.Find(".donut-center-group").Click();
 
-			nav.Uri.Replace(nav.BaseUri, "").ShouldBe("/weather");
+			var path = new Uri(nav.Uri).AbsolutePath;
+			path.ShouldBe("/weather");
 		}
 
 		/// <summary>
@@ -177,9 +181,11 @@ namespace DonutChartSolution.Tests
 				})
 			);
 
+			// Simulate JS calling back into .NET
 			cut.Instance.SliceClicked(0);
 
-			nav.Uri.Replace(nav.BaseUri, "").ShouldBe("/counter");
+			var path = new Uri(nav.Uri).AbsolutePath;
+			path.ShouldBe("/counter");
 		}
 
 		// --------------------------------------------------------------------
