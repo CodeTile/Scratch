@@ -1,92 +1,151 @@
 ﻿using System.Collections.Generic;
+using System.Linq;
 
 using Bunit;
-using Bunit.TestDoubles;
 
 using DonutChartSolution.Components.Shared;
 
+using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+
+using MudBlazor.Services;
 
 namespace DonutChartSolution.Tests
 {
 	[TestClass]
 	public class DonutChartTests
 	{
-		private Bunit.TestContext ctx;
+		private Bunit.TestContext _ctx = null!;
 
 		[TestInitialize]
-		public void Setup() => ctx = new Bunit.TestContext();
+		public void Setup()
+		{
+			_ctx = new Bunit.TestContext();
+
+			_ctx.Services.AddMudServices();
+			_ctx.Services.AddSingleton<NavigationManager, TestNavigationManager>();
+		}
 
 		[TestCleanup]
-		public void Cleanup() => ctx.Dispose();
-
-		[TestMethod]
-		public void DonutChart_RendersTitleAndTotal()
+		public void TearDown()
 		{
-			// Arrange
+			_ctx.Dispose();
+		}
+
+		// ---------------------------------------------------------
+		// BASIC RENDERING
+		// ---------------------------------------------------------
+		[TestMethod]
+		public void DonutChart_RendersTitle()
+		{
+			var cut = _ctx.Render<DonutChart>(p => p
+				.Add(x => x.Title, "Energy Chart")
+				.Add(x => x.Data, new[]
+				{
+			new KeyValuePair<string,int>("Gas",100)
+				})
+			);
+
+			StringAssert.Contains(cut.Markup, "Energy Chart");
+		}
+
+
+		// ---------------------------------------------------------
+		// TOTAL VALUE
+		// ---------------------------------------------------------
+		[TestMethod]
+		public void DonutChart_ShowsCorrectTotal()
+		{
 			var data = new List<KeyValuePair<string, int>>
 			{
 				new("Gas", 100),
 				new("Wind", 200)
 			};
 
-			// Act
-			var cut = ctx.Render<DonutChart>(parameters => parameters
-				.Add(p => p.Title, "Energy Mix")
-				.Add(p => p.Data, data)
-				.Add(p => p.InnerLabel, "Total")
+			var cut = _ctx.Render<DonutChart>(p => p
+				.Add(x => x.Data, data)
 			);
 
-			// Assert
-			Assert.IsTrue(cut.Markup.Contains("Energy Mix"));
-			Assert.IsTrue(cut.Markup.Contains("Total"));
-			Assert.IsTrue(cut.Markup.Contains("300")); // sum of 100+200
+			StringAssert.Contains(cut.Markup, "300");
 		}
 
+		// ---------------------------------------------------------
+		// DICTIONARY INPUT
+		// ---------------------------------------------------------
+		[TestMethod]
+		public void DonutChart_AcceptsDictionary()
+		{
+			var dict = new Dictionary<string, int>
+			{
+				{ "Solar", 250 },
+				{ "BioMass", 10 }
+			};
+
+			var cut = _ctx.Render<DonutChart>(p => p
+				.Add(x => x.DataDictionary, dict)
+			);
+
+			StringAssert.Contains(cut.Markup, "Solar");
+			StringAssert.Contains(cut.Markup, "BioMass");
+		}
+
+		// ---------------------------------------------------------
+		// CENTER CLICK NAVIGATION
+		// ---------------------------------------------------------
 		[TestMethod]
 		public void DonutChart_CenterClick_NavigatesToWeather()
 		{
-			// Arrange
-			var data = new List<KeyValuePair<string, int>> { new("Gas", 100) };
+			var nav = (TestNavigationManager)_ctx.Services.GetRequiredService<NavigationManager>();
 
-			var navMan = ctx.Services.GetService<BunitNavigationManager>();
-			Assert.IsNotNull(navMan);
-
-			var cut = ctx.Render<DonutChart>(parameters => parameters
-				.Add(p => p.Data, data)
+			var cut = _ctx.Render<DonutChart>(p => p
+				.Add(x => x.Data, new[]
+				{
+					new KeyValuePair<string,int>("Gas",100)
+				})
 			);
 
-			// Act: click the center text
-			cut.Find(".donut-inner-text").Click();
+			var center = cut.Find(".donut-center-group");
+			center.Click();
 
-			// Assert navigation
-			Assert.AreEqual("weather", navMan!.Uri.Replace(navMan.BaseUri, ""));
+			Assert.AreEqual("/weather", nav.Uri.Replace(nav.BaseUri, ""));
 		}
 
+		// ---------------------------------------------------------
+		// SLICE CLICK VIA JS INVOCATION
+		// ---------------------------------------------------------
 		[TestMethod]
 		public void DonutChart_SliceClick_NavigatesToCounter()
 		{
-			// Arrange
-			var data = new List<KeyValuePair<string, int>>
-			{
-				new("Gas", 100),
-				new("Wind", 200)
-			};
+			var nav = (TestNavigationManager)_ctx.Services.GetRequiredService<NavigationManager>();
 
-			var navMan = ctx.Services.GetService<BunitNavigationManager>();
-			Assert.IsNotNull(navMan);
-
-			var cut = ctx.Render<DonutChart>(parameters => parameters
-				.Add(p => p.Data, data)
+			var cut = _ctx.Render<DonutChart>(p => p
+				.Add(x => x.Data, new[]
+				{
+					new KeyValuePair<string,int>("Gas",100),
+					new KeyValuePair<string,int>("Wind",200)
+				})
 			);
 
-			// Act: simulate slice click by setting SelectedIndex and triggering OnParametersSet
-			cut.Instance.SelectedIndex = 0;
-			cut.Render(); // triggers OnParametersSet
+			cut.Instance.SliceClicked(0);
 
-			// Assert navigation
-			Assert.AreEqual("counter", navMan!.Uri.Replace(navMan.BaseUri, ""));
+			Assert.AreEqual("/counter", nav.Uri.Replace(nav.BaseUri, ""));
+		}
+	}
+
+	// ---------------------------------------------------------
+	// TEST NAVIGATION MANAGER
+	// ---------------------------------------------------------
+	public class TestNavigationManager : NavigationManager
+	{
+		public TestNavigationManager()
+		{
+			Initialize("http://localhost/", "http://localhost/");
+		}
+
+		protected override void NavigateToCore(string uri, bool forceLoad)
+		{
+			Uri = ToAbsoluteUri(uri).ToString();
 		}
 	}
 }
