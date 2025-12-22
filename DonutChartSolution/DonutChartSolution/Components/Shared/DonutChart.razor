@@ -1,15 +1,10 @@
 ﻿@using MudBlazor
 
-<!--
-    DonutChart.razor
-    Renders a MudBlazor donut chart with:
-    - Configurable inner label
-    - Clickable center navigation
-    - JS-enabled slice click support
--->
-
 <div class="donut-chart-wrapper">
-    <MudPaper Class="donut-chart-container" Elevation="1">
+    <MudPaper Class="donut-chart-container"
+              Elevation="1"
+              style="@Style">
+
         <div class="donut-title">@Title</div>
 
         <MudChart @ref="_chart"
@@ -20,8 +15,9 @@
                   id="@ChartContainerId" />
 
         <div class="donut-center-group" @onclick="OnCenterClick">
-            <div class="donut-inner-title">@InnerLabel ?? @Title</div>
+            <div class="donut-inner-title">@((InnerLabel ?? Title))</div>
             <div class="donut-inner-text">@Total</div>
         </div>
+
     </MudPaper>
 </div>

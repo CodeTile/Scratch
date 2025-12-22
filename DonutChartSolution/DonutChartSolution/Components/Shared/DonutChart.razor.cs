@@ -42,6 +42,12 @@ namespace DonutChartSolution.Components.Shared
 		/// </summary>
 		[Parameter] public string? InnerLabel { get; set; }
 
+		/// <summary>
+		/// Optional inline CSS applied directly to the chart container.
+		/// Example: "width:350px;height:350px;margin:20px;"
+		/// </summary>
+		[Parameter] public string? Style { get; set; }
+
 		[Inject] private NavigationManager NavigationManager { get; set; } = default!;
 		[Inject] private IJSRuntime JS { get; set; } = default!;
 
