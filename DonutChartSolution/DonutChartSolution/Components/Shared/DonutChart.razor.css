@@ -7,11 +7,11 @@
 
 /* Outer container (MudPaper) */
 .donut-chart-outer {
-    padding: 1rem; /* NEW: padding around the whole control */
+    padding: 1rem; /* padding around the whole control */
     background-color: transparent;
     display: flex;
     flex-direction: column;
-    align-items: center; /* NEW: centers the chart horizontally */
+    align-items: center; /* centers the chart horizontally */
 }
 
 /* Title stays above the donut */
@@ -27,15 +27,16 @@
     width: 300px;
     height: 300px;
     display: flex;
-    justify-content: center; /* NEW: centers the chart horizontally */
-    align-items: center; /* NEW: centers the chart vertically */
-    padding: 1rem; /* NEW: padding inside the donut container */
+    justify-content: center; /* centers the chart horizontally */
+    align-items: center;     /* centers the chart vertically */
+    padding: 1rem;           /*  padding inside the donut container */
 }
 
 /* Force MudChart SVG to fill the container */
 .donut-chart {
     width: 100% !important;
     height: 100% !important;
+    pointer-events: none;
 }
 
 /* Center overlay is now perfectly aligned */
@@ -46,6 +47,8 @@
     transform: translate(-50%, -90%);
     text-align: center;
     cursor: pointer;
+    z-index: 10;
+    pointer-events: auto; 
 }
 
 .donut-inner-title {

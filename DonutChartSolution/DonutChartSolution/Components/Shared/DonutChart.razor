@@ -1,6 +1,6 @@
 ﻿@using MudBlazor
 
-<div class="donut-chart-wrapper">
+<div id="@ChartContainerId" class="donut-chart-wrapper">
 
     <MudPaper Class="donut-chart-outer"
               Elevation="1"
@@ -15,7 +15,7 @@
                       InputData="DataValues"
                       InputLabels="DataLabels"
                       Class="donut-chart"
-                      id="@ChartContainerId" />
+                       />
 
             <div class="donut-center-group" @onclick="OnCenterClick">
                 <div class="donut-inner-title">@InnerLabel</div>
