@@ -1,0 +1,59 @@
+﻿@namespace DonutChartSolution.Components.Shared
+@inject NavigationManager Navigation
+@rendermode InteractiveServer
+
+<div class="donut-chart-container"
+     style="--donut-thickness:@(Thickness ?? 40)">
+
+    <svg class="donut-chart-svg"
+         width="@Width"
+         height="@Height"
+         viewBox="0 0 200 200"
+         @onmouseleave="ClearHover">
+
+        @if (!string.IsNullOrWhiteSpace(Title))
+        {
+            @:<text x="100" y="20" text-anchor="middle" class="donut-title">@Title</text>
+        }
+
+        <g class="donut-slices">
+            @foreach (var slice in Slices)
+            {
+                <path d="@slice.PathData"
+                      fill="@slice.Color"
+                      class="donut-slice"
+                      @onclick="() => OnSliceClick(slice)"
+                      @onmouseover="() => OnSliceHover(slice)">
+                </path>
+            }
+        </g>
+
+        <g class="donut-center"
+           @onclick="OnCenterClick"
+           @onmouseover="OnCenterHover">
+
+            @if (IsDonut)
+            {
+                <circle cx="100" cy="100" r="@InnerRadius" class="donut-center-circle"></circle>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(InnerTitle))
+            {
+                @:<text x="100" y="95" text-anchor="middle" class="donut-inner-title">@InnerTitle</text>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(InnerText))
+            {
+                @:<text x="100" y="115" text-anchor="middle" class="donut-inner-text">@InnerText</text>
+            }
+        </g>
+    </svg>
+
+    @if (ShowTooltip)
+    {
+        <div class="donut-tooltip">
+            <div class="donut-tooltip-title">@TooltipLabel</div>
+            <div class="donut-tooltip-value">@TooltipValue</div>
+        </div>
+    }
+</div>

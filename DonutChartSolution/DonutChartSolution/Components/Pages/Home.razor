@@ -1,7 +1,44 @@
 ﻿@page "/"
+@using DonutChartSolution.Components.Shared
 
-<PageTitle>Home</PageTitle>
+<h3>Donut Chart Demo</h3>
 
-<h1>Hello, world!</h1>
+<div style="display:flex; gap:40px; flex-wrap:wrap;">
 
-Welcome to your new app.
+    <!-- Donut version -->
+    <DonutChart Title="Sales by Region"
+                InnerTitle="Total Sales"
+                InnerText="Click center for weather"
+                IsDonut="true"
+                Width="320"
+                Height="320"
+                Data="@SalesData" />
+
+    <!-- Pie version -->
+    <DonutChart Title="Task Breakdown"
+                InnerTitle="Tasks"
+                InnerText="Click slices for counter"
+                IsDonut="false"
+                Width="320"
+                Height="320"
+                Items="@TaskItems" />
+
+</div>
+
+@code {
+    private Dictionary<string, int> SalesData = new()
+    {
+        ["North"] = 120,
+        ["South"] = 80,
+        ["East"] = 140,
+        ["West"] = 60
+    };
+
+    private IEnumerable<KeyValuePair<string, int>> TaskItems =
+        new List<KeyValuePair<string, int>>
+        {
+            new("Completed", 30),
+            new("In Progress", 15),
+            new("Blocked", 5)
+        };
+}

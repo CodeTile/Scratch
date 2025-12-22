@@ -1,0 +1,74 @@
+﻿:root {
+    --donut-thickness: 20;
+}
+
+.donut-chart-container {
+    position: relative;
+    display: inline-block;
+}
+
+.donut-chart-svg {
+    display: block;
+}
+
+.donut-title {
+    font-size: 14px;
+    font-weight: 600;
+    fill: #333;
+}
+
+.donut-inner-title {
+    font-size: 12px;
+    font-weight: 600;
+    fill: #333;
+}
+
+.donut-inner-text {
+    font-size: 10px;
+    fill: #666;
+}
+
+.donut-slice {
+    cursor: pointer;
+    transition: transform 0.15s ease, opacity 0.15s ease;
+    transform-origin: 100px 100px;
+}
+
+    .donut-slice:hover {
+        transform: scale(1.03);
+        opacity: 0.9;
+    }
+
+.donut-center-circle {
+    fill: #fff;
+    stroke: #ddd;
+    stroke-width: 1;
+    cursor: pointer;
+}
+
+.donut-center:hover .donut-center-circle {
+    fill: #f5f5f5;
+}
+
+.donut-tooltip {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    background: #333;
+    color: #fff;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 10;
+}
+
+.donut-tooltip-title {
+    font-weight: 600;
+}
+
+.donut-tooltip-value {
+    margin-top: 2px;
+}
