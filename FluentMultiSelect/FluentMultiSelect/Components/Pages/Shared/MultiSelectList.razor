@@ -1,13 +1,26 @@
 ﻿@rendermode InteractiveServer
 
 <div >
-    <FluentSelect TOption="string"
-                  Multiple="@IsMultiSelect"
-                  Label="@Label"
-                  Items="@Data"
-                  PlaceHolder="@Placeholder"
-                  Value="@Value"
-                  ValueChanged="@OnValueChanged"
-                  Values="@Values"
-                  ValuesChanged="@OnValuesChanged" />
+    @if (IsMultiSelect)
+    {
+        <FluentSelect TOption="string"
+                      Multiple="true"
+                      Label="@Label"
+                      Items="@Data"
+                      PlaceHolder="@Placeholder"
+                      Values="@Values"
+                      ValuesChanged="@OnValuesChanged" />
+    }
+    else
+    {
+
+        <FluentSelect TOption="string"
+                      Multiple="false"
+                      Label="@Label"
+                      Items="@Data"
+                      PlaceHolder="@Placeholder"
+                      Value="@Value"
+                      ValueChanged="@OnValueChanged" />
+    }
+
 </div>

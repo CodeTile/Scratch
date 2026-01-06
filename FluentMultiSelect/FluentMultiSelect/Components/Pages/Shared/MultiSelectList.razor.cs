@@ -35,10 +35,9 @@ public partial class MultiSelectList : ComponentBase
 
 	private async Task OnValuesChanged(IEnumerable<string> newValues)
 	{
+		Console.WriteLine("".PadRight(200, 'A'));
 		Values = newValues;
 		await ValuesChanged.InvokeAsync(newValues);
 		await OnChange.InvokeAsync(newValues);
 	}
-
-
 }
