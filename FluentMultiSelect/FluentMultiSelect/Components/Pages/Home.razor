@@ -2,10 +2,27 @@
 @using FluentMultiSelect.Components.Pages.Shared
 <PageTitle>Home</PageTitle>
 
-<h1>Hello, world!</h1>
+@page "/select-test"
 
-Welcome to your new app.
+<h3>Single Select Example</h3>
 
-<SelectList
+<SelectList Label="Choose a Category"
+            Data="@Categories"
+            @bind-Value="@SelectedCategory"
+            OnChange="HandleCategoryChanged"
+            Placeholder="Select category" />
 
-/>
+<p>Selected Category: @SelectedCategory</p>
+
+<hr />
+
+<h3>Multi Select Example</h3>
+
+<SelectList Label="Choose Tags"
+            IsMultiSelect="true"
+            Data="@Tags"
+            @bind-Values="@SelectedTags"
+            OnChange="HandleTagsChanged"
+            Placeholder="Select tags" />
+
+<p>Selected Tags: @string.Join(", ", SelectedTags)</p>

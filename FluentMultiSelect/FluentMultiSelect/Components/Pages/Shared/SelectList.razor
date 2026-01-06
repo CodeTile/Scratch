@@ -1,7 +1,11 @@
-﻿<FluentCard>
-    <h2>Select List!</h2>
-    <FluentButton Appearance="@Appearance.Accent">Click Me</FluentButton>
-</FluentCard>
-@code {
-
-}
+﻿<div >
+    <FluentSelect TOption="string"
+                  Multiple="@IsMultiSelect"
+                  Label="@Label"
+                  Items="@Data"
+                  PlaceHolder="@Placeholder"
+                  Value="@Value"
+                  ValueChanged="@OnValueChanged"
+                  Values="@Values"
+                  ValuesChanged="@OnValuesChanged" />
+</div>
