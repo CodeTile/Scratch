@@ -4,11 +4,10 @@
 
 <PageTitle>Home</PageTitle>
 
-@page "/select-test"
 
 <h3>Single Select Example</h3>
 
-<SelectList Label="Choose a Category"
+<MultiSelectList Label="Choose a Category"
             Data="@Categories"
             @bind-Value="@SelectedCategory"
             OnChange="HandleCategoryChanged"
@@ -20,7 +19,7 @@
 
 <h3>Multi Select Example</h3>
 
-<SelectList Label="Choose Tags"
+<MultiSelectList Label="Choose Tags"
             IsMultiSelect="true"
             Data="@Tags"
             @bind-Values="@SelectedTags"

@@ -5,7 +5,7 @@ using System.Collections.Generic;
 
 namespace FluentMultiSelect.Components.Pages.Shared;
 
-public partial class SelectList : ComponentBase
+public partial class MultiSelectList : ComponentBase
 {
 	[Parameter] public bool IsMultiSelect { get; set; }
 	[Parameter] public string? Label { get; set; }
