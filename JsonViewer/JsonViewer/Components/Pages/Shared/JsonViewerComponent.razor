@@ -1,0 +1,49 @@
+﻿@inherits JsonViewer.Components.Pages.Shared.JsonViewerComponentBase
+@rendermode InteractiveServer
+
+<FluentStack Orientation="@Orientation.Vertical" Gap="10px">
+
+    <!-- Toolbar -->
+    <FluentStack Orientation="@Orientation.Horizontal"
+                 Gap="10px"
+                 AlignItems="center"
+                 JustifyContent="space-between"
+                 Style="width: 100%;">
+
+        <!-- LEFT: Title -->
+        <div style="font-size: 18px; font-weight: 600;">
+            JSON Viewer
+        </div>
+
+        <!-- CENTER: Search box -->
+        <div style="flex: 1; display: flex; justify-content: center;">
+            <FluentTextField Placeholder="Search…"
+                             @bind-Value="SearchText"
+                             Style="width: 250px;" />
+        </div>
+
+        <!-- RIGHT: Buttons -->
+        <FluentStack Orientation="@Orientation.Horizontal" Gap="10px">
+            <FluentButton Appearance="@Appearance.Accent" OnClick="ToggleFormat">
+                @(ShowFormatted ? "Show Raw" : "Show Formatted")
+            </FluentButton>
+
+            <FluentButton Appearance="@Appearance.Stealth" OnClick="CopyToClipboard">
+                Copy
+            </FluentButton>
+        </FluentStack>
+
+    </FluentStack>
+
+    <!-- JSON Display -->
+    <FluentCard Style="padding: 12px; max-height: 500px; overflow: auto;">
+        <p>DEBUG: @DisplayJson.Length chars</p>
+
+        <FluentHighlighter Code="@DisplayJson"
+                           Language="plaintext"
+                           ShowLineNumbers="true" />
+
+
+    </FluentCard>
+
+</FluentStack>

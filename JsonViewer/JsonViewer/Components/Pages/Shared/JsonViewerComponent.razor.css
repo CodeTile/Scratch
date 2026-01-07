@@ -1,0 +1,28 @@
+﻿button.fluent-button {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+    /* Accent button */
+    button.fluent-button[appearance="accent"] {
+        background-color: #0078d4;
+        color: white;
+        border: none;
+    }
+
+        button.fluent-button[appearance="accent"]:hover {
+            background-color: #005fa3;
+        }
+
+    /* Stealth button */
+    button.fluent-button[appearance="stealth"] {
+        color: #444;
+        background: transparent;
+        border: 1px solid #ccc;
+    }
+
+        button.fluent-button[appearance="stealth"]:hover {
+            background-color: #f3f3f3;
+        }
