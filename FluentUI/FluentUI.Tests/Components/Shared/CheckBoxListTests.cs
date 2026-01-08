@@ -6,28 +6,23 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 using Shouldly;
 
-using System.Collections.Generic;
-
 [TestClass]
 public class CheckBoxListTests
 {
-	// ---------------------------------------------------------
-	// Scenario 1: Complex object model
-	// ---------------------------------------------------------
 	private class Employee
 	{
 		public long Id { get; set; }
 		public string Name { get; set; } = "";
 	}
 
+	// ---------------------------------------------------------
+	// Basic add/remove
+	// ---------------------------------------------------------
+
 	[TestMethod]
-	public void ToggleValue_Should_Add_ComplexObject_Selection()
+	public void AddSelection_ShouldAddValueAndText()
 	{
-		var component = new CheckBoxList<Employee>
-		{
-			SelectedValues = new List<string>(),
-			SelectedTexts = new List<string>()
-		};
+		var component = NewComponent<string>();
 
 		component.ToggleValue("101", "John Doe", true);
 
@@ -36,13 +31,10 @@ public class CheckBoxListTests
 	}
 
 	[TestMethod]
-	public void ToggleValue_Should_Remove_ComplexObject_Selection()
+	public void RemoveSelection_ShouldRemoveValueAndText()
 	{
-		var component = new CheckBoxList<Employee>
-		{
-			SelectedValues = new List<string> { "101" },
-			SelectedTexts = new List<string> { "John Doe" }
-		};
+		var component = NewComponent<string>();
+		component.ToggleValue("101", "John Doe", true);
 
 		component.ToggleValue("101", "John Doe", false);
 
@@ -51,68 +43,47 @@ public class CheckBoxListTests
 	}
 
 	// ---------------------------------------------------------
-	// Scenario 2: Simple string list
+	// Multiple selections
 	// ---------------------------------------------------------
+
 	[TestMethod]
-	public void ToggleValue_Should_Add_String_Selection()
+	public void MultipleSelections_ShouldAddAll()
 	{
-		var component = new CheckBoxList<string>
-		{
-			SelectedValues = new List<string>(),
-			SelectedTexts = new List<string>()
-		};
+		var component = NewComponent<string>();
 
-		component.ToggleValue("Red", "Red", true);
+		component.ToggleValue("1", "A", true);
+		component.ToggleValue("2", "B", true);
+		component.ToggleValue("3", "C", true);
 
-		component.SelectedValues.ShouldContain("Red");
-		component.SelectedTexts.ShouldContain("Red");
+		component.SelectedValues.ShouldBe(["1", "2", "3"]);
+		component.SelectedTexts.ShouldBe(["A", "B", "C"]);
 	}
 
 	[TestMethod]
-	public void ToggleValue_Should_Remove_String_Selection()
+	public void RemovingOneFromMultiple_ShouldOnlyRemoveThatOne()
 	{
-		var component = new CheckBoxList<string>
-		{
-			SelectedValues = new List<string> { "Red" },
-			SelectedTexts = new List<string> { "Red" }
-		};
+		var component = NewComponent<string>();
 
-		component.ToggleValue("Red", "Red", false);
+		component.ToggleValue("1", "A", true);
+		component.ToggleValue("2", "B", true);
+		component.ToggleValue("3", "C", true);
 
-		component.SelectedValues.ShouldNotContain("Red");
-		component.SelectedTexts.ShouldNotContain("Red");
+		component.ToggleValue("2", "B", false);
+
+		component.SelectedValues.ShouldBe(["1", "3"]);
+		component.SelectedTexts.ShouldBe(["A", "C"]);
 	}
 
 	// ---------------------------------------------------------
-	// Scenario 3: Text-only objects (value == text)
+	// Duplicate prevention
 	// ---------------------------------------------------------
+
 	[TestMethod]
-	public void ToggleValue_Should_Add_TextOnly_Selection()
+	public void DuplicateSelections_ShouldNotBeAdded()
 	{
-		var component = new CheckBoxList<string>
-		{
-			SelectedValues = new List<string>(),
-			SelectedTexts = new List<string>()
-		};
+		var component = NewComponent<string>();
 
-		component.ToggleValue("Finance", "Finance", true);
-
-		component.SelectedValues.ShouldContain("Finance");
-		component.SelectedTexts.ShouldContain("Finance");
-	}
-
-	// ---------------------------------------------------------
-	// Duplicate protection
-	// ---------------------------------------------------------
-	[TestMethod]
-	public void ToggleValue_Should_Not_Duplicate_Selections()
-	{
-		var component = new CheckBoxList<string>
-		{
-			SelectedValues = new List<string> { "Blue" },
-			SelectedTexts = new List<string> { "Blue" }
-		};
-
+		component.ToggleValue("Blue", "Blue", true);
 		component.ToggleValue("Blue", "Blue", true);
 
 		component.SelectedValues.Count.ShouldBe(1);
@@ -120,21 +91,105 @@ public class CheckBoxListTests
 	}
 
 	// ---------------------------------------------------------
-	// Add/remove sequence
+	// Repeated toggling
 	// ---------------------------------------------------------
+
 	[TestMethod]
-	public void ToggleValue_Should_Add_Then_Remove_Correctly()
+	public void RepeatedToggle_ShouldEndInCorrectState()
 	{
-		var component = new CheckBoxList<string>
+		var component = NewComponent<string>();
+
+		component.ToggleValue("X", "X", true);
+		component.ToggleValue("X", "X", false);
+		component.ToggleValue("X", "X", true);
+
+		component.SelectedValues.ShouldBe(["X"]);
+		component.SelectedTexts.ShouldBe(["X"]);
+	}
+
+	// ---------------------------------------------------------
+	// Null and empty handling
+	// ---------------------------------------------------------
+
+	[TestMethod]
+	public void EmptyValue_ShouldBeHandled()
+	{
+		var component = NewComponent<string>();
+
+		component.ToggleValue("", "", true);
+
+		component.SelectedValues.ShouldContain("");
+		component.SelectedTexts.ShouldContain("");
+	}
+
+	[TestMethod]
+	public void NullValue_ShouldBeHandled()
+	{
+		var component = NewComponent<string>();
+
+		component.ToggleValue(null!, null!, true);
+
+		component.SelectedValues.ShouldContain(null);
+		component.SelectedTexts.ShouldContain(null);
+	}
+
+	// ---------------------------------------------------------
+	// Order preservation
+	// ---------------------------------------------------------
+
+	[TestMethod]
+	public void OrderShouldBePreserved()
+	{
+		var component = NewComponent<string>();
+
+		component.ToggleValue("A", "A", true);
+		component.ToggleValue("B", "B", true);
+		component.ToggleValue("C", "C", true);
+
+		component.SelectedValues.ShouldBe(["A", "B", "C"]);
+	}
+
+	// ---------------------------------------------------------
+	// Complex object tests
+	// ---------------------------------------------------------
+
+	[TestMethod]
+	public void ComplexObject_ShouldStoreCorrectValues()
+	{
+		var component = NewComponent<Employee>();
+
+		component.ToggleValue("101", "Alice", true);
+
+		component.SelectedValues.ShouldContain("101");
+		component.SelectedTexts.ShouldContain("Alice");
+	}
+
+	// ---------------------------------------------------------
+	// Stress test
+	// ---------------------------------------------------------
+
+	[TestMethod]
+	public void LargeNumberOfSelections_ShouldAllBeAdded()
+	{
+		var component = NewComponent<string>();
+
+		for (int i = 0; i < 1000; i++)
+		{
+			component.ToggleValue(i.ToString(), $"Text{i}", true);
+		}
+
+		component.SelectedValues.Count.ShouldBe(1000);
+		component.SelectedTexts.Count.ShouldBe(1000);
+	}
+
+	// ---------------------------------------------------------
+	// Helper
+	// ---------------------------------------------------------
+
+	private static CheckBoxList<T> NewComponent<T>() =>
+		new()
 		{
 			SelectedValues = new List<string>(),
 			SelectedTexts = new List<string>()
 		};
-
-		component.ToggleValue("Green", "Green", true);
-		component.ToggleValue("Green", "Green", false);
-
-		component.SelectedValues.ShouldBeEmpty();
-		component.SelectedTexts.ShouldBeEmpty();
-	}
 }
