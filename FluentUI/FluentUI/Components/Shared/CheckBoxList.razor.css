@@ -1,0 +1,27 @@
+﻿.fui-checklist {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 4px;
+}
+
+.fui-checklist-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    cursor: pointer;
+    font-size: 14px;
+    border-radius: 4px;
+    transition: background-color 0.15s ease;
+}
+
+    .fui-checklist-item:hover {
+        background-color: var(--neutral-layer-2);
+    }
+
+    .fui-checklist-item input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--accent-fill-rest);
+    }

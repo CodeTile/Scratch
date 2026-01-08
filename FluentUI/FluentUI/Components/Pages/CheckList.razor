@@ -1,0 +1,108 @@
+﻿@page "/checklist"
+@using FluentUI.Components.Shared
+@using FluentUI.Data
+@using FluentUI.Data.Models
+@rendermode InteractiveServer
+
+<FluentCard class="demo-card">
+
+    <h2>Reusable CheckBoxList Demo</h2>
+    <FluentDivider />
+
+    <!-- Scenario 1: Complex Objects (Employee) -->
+    <h3>1. Employees (Object List)</h3>
+
+    <CheckBoxList Data="@EmployeeList"
+                  TextField="@(e => e.FullName)"
+                  ValueField="@(e => e.EmployeeId)"
+                  SelectedValues="@SelectedEmployeeIds"
+                  SelectedValuesChanged="OnEmployeeIdsChanged"
+                  SelectedTexts="@SelectedEmployeeNames"
+                  SelectedTextsChanged="OnEmployeeNamesChanged" />
+
+    <div class="output-row">
+        <label>Selected Employee IDs:</label>
+        <FluentBadge Appearance="Appearance.Accent">@EmployeeIdsOutput</FluentBadge>
+    </div>
+
+    <div class="output-row">
+        <label>Selected Employee Names:</label>
+        <FluentBadge Appearance="Appearance.Accent">@EmployeeNamesOutput</FluentBadge>
+    </div>
+
+    <FluentDivider />
+
+    <!-- Scenario 2: Simple Strings -->
+    <h3>2. Colors (List of Strings)</h3>
+
+    <CheckBoxList Data="@ColorList"
+                  SelectedValues="@SelectedColors"
+                  SelectedValuesChanged="OnColorsChanged"
+                  SelectedTexts="@SelectedColorNames"
+                  SelectedTextsChanged="OnColorNamesChanged" />
+
+    <div class="output-row">
+        <label>Selected Colors:</label>
+        <FluentBadge Appearance="Appearance.Accent">@ColorOutput</FluentBadge>
+    </div>
+
+    <FluentDivider />
+
+    <!-- Scenario 3: Objects with No Value Field -->
+    <h3>3. Departments (Object List, Text Only)</h3>
+
+    <CheckBoxList Data="@DepartmentList"
+                  TextField="@(d => d)"
+                  ValueField="@(d => d)"
+                  SelectedValues="@SelectedDepartments"
+                  SelectedValuesChanged="OnDepartmentsChanged"
+                  SelectedTexts="@SelectedDepartmentNames"
+                  SelectedTextsChanged="OnDepartmentNamesChanged" />
+
+    <div class="output-row">
+        <label>Selected Departments:</label>
+        <FluentBadge Appearance="Appearance.Accent">@DepartmentOutput</FluentBadge>
+    </div>
+
+</FluentCard>
+
+@code {
+    // Scenario 1: Employees
+    public List<Employee> EmployeeList { get; set; } = DataHelper.GetMockEmployees();
+    public List<string> SelectedEmployeeIds { get; set; } = new();
+    public List<string> SelectedEmployeeNames { get; set; } = new();
+    public string EmployeeIdsOutput { get; set; } = "";
+    public string EmployeeNamesOutput { get; set; } = "";
+
+    void OnEmployeeIdsChanged(List<string> ids) =>
+        EmployeeIdsOutput = string.Join(", ", ids);
+
+    void OnEmployeeNamesChanged(List<string> names) =>
+        EmployeeNamesOutput = string.Join(", ", names);
+
+
+    // Scenario 2: Simple Strings
+    public List<string> ColorList { get; set; } = new() { "Red", "Green", "Blue", "Yellow" };
+    public List<string> SelectedColors { get; set; } = new();
+    public List<string> SelectedColorNames { get; set; } = new();
+    public string ColorOutput { get; set; } = "";
+
+    void OnColorsChanged(List<string> values) =>
+        ColorOutput = string.Join(", ", values);
+
+    void OnColorNamesChanged(List<string> names) =>
+        ColorOutput = string.Join(", ", names);
+
+
+    // Scenario 3: Text-only Objects
+    public List<string> DepartmentList { get; set; } = new() { "HR", "Finance", "IT", "Marketing" };
+    public List<string> SelectedDepartments { get; set; } = new();
+    public List<string> SelectedDepartmentNames { get; set; } = new();
+    public string DepartmentOutput { get; set; } = "";
+
+    void OnDepartmentsChanged(List<string> values) =>
+        DepartmentOutput = string.Join(", ", values);
+
+    void OnDepartmentNamesChanged(List<string> names) =>
+        DepartmentOutput = string.Join(", ", names);
+}

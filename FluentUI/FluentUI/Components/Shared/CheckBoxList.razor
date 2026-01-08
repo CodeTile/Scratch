@@ -1,0 +1,65 @@
+﻿@typeparam TItem
+
+<div class="fui-checklist">
+    @foreach (var item in Data)
+    {
+        string text;
+        string value;
+
+        if (typeof(TItem) == typeof(string))
+        {
+            // Simple string list
+            text = item?.ToString();
+            value = item?.ToString();
+        }
+        else
+        {
+            // Complex object list
+            text = TextField(item);
+            value = ValueField(item)?.ToString();
+        }
+
+        <label class="fui-checklist-item">
+            <input type="checkbox"
+                   checked="@SelectedValues.Contains(value)"
+                   @onchange="e => ToggleValue(value, text, e.Value)">
+            <span>@text</span>
+        </label>
+    }
+</div>
+
+@code {
+    [Parameter] public IEnumerable<TItem> Data { get; set; }
+
+    // Optional for string lists
+    [Parameter] public Func<TItem, string> TextField { get; set; }
+    [Parameter] public Func<TItem, object> ValueField { get; set; }
+
+    [Parameter] public List<string> SelectedValues { get; set; }
+    [Parameter] public EventCallback<List<string>> SelectedValuesChanged { get; set; }
+
+    [Parameter] public List<string> SelectedTexts { get; set; }
+    [Parameter] public EventCallback<List<string>> SelectedTextsChanged { get; set; }
+
+    private async void ToggleValue(string value, string text, object changed)
+    {
+        bool isChecked = changed is bool b && b;
+
+        if (isChecked)
+        {
+            if (!SelectedValues.Contains(value))
+                SelectedValues.Add(value);
+
+            if (!SelectedTexts.Contains(text))
+                SelectedTexts.Add(text);
+        }
+        else
+        {
+            SelectedValues.Remove(value);
+            SelectedTexts.Remove(text);
+        }
+
+        await SelectedValuesChanged.InvokeAsync(SelectedValues);
+        await SelectedTextsChanged.InvokeAsync(SelectedTexts);
+    }
+}
