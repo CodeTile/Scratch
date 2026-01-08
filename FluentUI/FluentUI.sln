@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FluentUI.Tests", "FluentUI.
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FluentUI.Tests.Reqnroll", "FluentUI.Tests.Reqnroll\FluentUI.Tests.Reqnroll.csproj", "{EDDC536D-C385-4D09-ACA5-17FF98F1927B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -23,12 +25,17 @@ Global
 		{EC0FDE38-EF1D-411D-A028-AE1019A6A3A2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EC0FDE38-EF1D-411D-A028-AE1019A6A3A2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{EC0FDE38-EF1D-411D-A028-AE1019A6A3A2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EDDC536D-C385-4D09-ACA5-17FF98F1927B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EDDC536D-C385-4D09-ACA5-17FF98F1927B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EDDC536D-C385-4D09-ACA5-17FF98F1927B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EDDC536D-C385-4D09-ACA5-17FF98F1927B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{EC0FDE38-EF1D-411D-A028-AE1019A6A3A2} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+		{EDDC536D-C385-4D09-ACA5-17FF98F1927B} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {2DCCE1A0-1702-4B46-BE50-E83283AC7CF7}
