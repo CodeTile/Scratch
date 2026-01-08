@@ -68,7 +68,7 @@ namespace FluentUI.Components.Shared
 		/// <param name="value">The value associated with the checkbox.</param>
 		/// <param name="text">The display text associated with the checkbox.</param>
 		/// <param name="changed">The new checked state provided by the event.</param>
-		protected async void ToggleValue(string value, string text, object changed)
+		public async void ToggleValue(string value, string text, object changed)
 		{
 			bool isChecked = changed is bool b && b;
 
