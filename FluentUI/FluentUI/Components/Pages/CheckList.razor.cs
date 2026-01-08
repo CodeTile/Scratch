@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Components;
 
 namespace FluentUI.Components.Pages
 {
-	public partial class CheckList : OwningComponentBase
+	public partial class CheckList : ComponentBase
 	{
 		// Scenario 1: Employees
 		public List<Employee> EmployeeList { get; set; } = DataHelper.GetMockEmployees();
