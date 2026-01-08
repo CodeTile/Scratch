@@ -66,43 +66,4 @@
 
 </FluentCard>
 
-@code {
-    // Scenario 1: Employees
-    public List<Employee> EmployeeList { get; set; } = DataHelper.GetMockEmployees();
-    public List<string> SelectedEmployeeIds { get; set; } = new();
-    public List<string> SelectedEmployeeNames { get; set; } = new();
-    public string EmployeeIdsOutput { get; set; } = "";
-    public string EmployeeNamesOutput { get; set; } = "";
 
-    void OnEmployeeIdsChanged(List<string> ids) =>
-        EmployeeIdsOutput = string.Join(", ", ids);
-
-    void OnEmployeeNamesChanged(List<string> names) =>
-        EmployeeNamesOutput = string.Join(", ", names);
-
-
-    // Scenario 2: Simple Strings
-    public List<string> ColorList { get; set; } = new() { "Red", "Green", "Blue", "Yellow" };
-    public List<string> SelectedColors { get; set; } = new();
-    public List<string> SelectedColorNames { get; set; } = new();
-    public string ColorOutput { get; set; } = "";
-
-    void OnColorsChanged(List<string> values) =>
-        ColorOutput = string.Join(", ", values);
-
-    void OnColorNamesChanged(List<string> names) =>
-        ColorOutput = string.Join(", ", names);
-
-
-    // Scenario 3: Text-only Objects
-    public List<string> DepartmentList { get; set; } = new() { "HR", "Finance", "IT", "Marketing" };
-    public List<string> SelectedDepartments { get; set; } = new();
-    public List<string> SelectedDepartmentNames { get; set; } = new();
-    public string DepartmentOutput { get; set; } = "";
-
-    void OnDepartmentsChanged(List<string> values) =>
-        DepartmentOutput = string.Join(", ", values);
-
-    void OnDepartmentNamesChanged(List<string> names) =>
-        DepartmentOutput = string.Join(", ", names);
-}
