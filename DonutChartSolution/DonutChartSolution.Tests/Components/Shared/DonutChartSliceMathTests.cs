@@ -10,12 +10,12 @@ namespace DonutChartSolution.Tests.Components.Shared
 	[TestClass]
 	public class DonutChartSliceMathTests
 	{
-		private Bunit.TestContext _bunit = null!;
+		private Bunit.BunitContext _bunit = null!;
 
 		[TestInitialize]
 		public void Setup()
 		{
-			_bunit = new Bunit.TestContext();
+			_bunit = new Bunit.BunitContext();
 		}
 
 		[TestCleanup]

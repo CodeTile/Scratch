@@ -12,12 +12,12 @@ namespace DonutChartSolution.Tests.Components.Shared
 	[TestClass]
 	public class DonutChartTests
 	{
-		private Bunit.TestContext _bunit = null!;
+		private Bunit.BunitContext _bunit = null!;
 
 		[TestInitialize]
 		public void Setup()
 		{
-			_bunit = new Bunit.TestContext();
+			_bunit = new Bunit.BunitContext();
 		}
 
 		[TestCleanup]
@@ -140,7 +140,7 @@ namespace DonutChartSolution.Tests.Components.Shared
 
 			var cut = _bunit.Render<DonutChart>(p => p
 				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 10 })
-				.Add(x => x.OnSliceClick, (string label) => clicked = label)
+				.Add(x => x.OnSliceClick, label => clicked = label)
 			);
 
 			cut.Find("path.donut-slice").Click();

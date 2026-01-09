@@ -1,20 +1,22 @@
 ﻿using System.Reflection;
+
 using Bunit;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
-using Shouldly;
+
 using DonutChartSolution.Components.Shared;
+
+using Shouldly;
 
 namespace DonutChartSolution.Tests.Components.Shared
 {
 	[TestClass]
 	public class DonutChartGeometryTests
 	{
-		private Bunit.TestContext _bunit = null!;
+		private Bunit.BunitContext _bunit = null!;
 
 		[TestInitialize]
 		public void Setup()
 		{
-			_bunit = new Bunit.TestContext();
+			_bunit = new Bunit.BunitContext();
 		}
 
 		[TestCleanup]
@@ -33,7 +35,7 @@ namespace DonutChartSolution.Tests.Components.Shared
 				.GetMethod("BuildDonutSlicePath", BindingFlags.NonPublic | BindingFlags.Instance)
 				?? throw new InvalidOperationException("BuildDonutSlicePath not found");
 
-			return (string)method.Invoke(instance, new object[] { startAngle, sweepAngle })!;
+			return (string)method.Invoke(instance, [startAngle, sweepAngle])!;
 		}
 
 		private static double InvokeDegreesToRadians(double degrees)
@@ -42,7 +44,7 @@ namespace DonutChartSolution.Tests.Components.Shared
 				.GetMethod("DegreesToRadians", BindingFlags.NonPublic | BindingFlags.Static)
 				?? throw new InvalidOperationException("DegreesToRadians not found");
 
-			return (double)method.Invoke(null, new object[] { degrees })!;
+			return (double)method.Invoke(null, [degrees])!;
 		}
 
 		// ---------------------------------------------------------
