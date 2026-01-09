@@ -78,7 +78,7 @@ namespace DonutChartSolution.Components.Shared
 		/// <summary>
 		/// The computed inner radius of the donut. Zero for pie charts.
 		/// </summary>
-		private double InnerRadius =>
+		internal double InnerRadius =>
 			IsDonut ? OuterRadius - (Thickness ?? 40) : 0;
 
 		/// <summary>

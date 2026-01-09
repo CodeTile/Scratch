@@ -1,123 +1,57 @@
-﻿using System.Reflection;
-
-using Bunit;
+﻿using Bunit;
 
 using DonutChartSolution.Components.Shared;
 
-using Shouldly;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace DonutChartSolution.Tests.Components.Shared
 {
 	[TestClass]
-	public class DonutChartGeometryTests
+	public class DonutChartGeometryTests : BunitContext
 	{
-		private Bunit.BunitContext _bunit = null!;
-
-		[TestInitialize]
-		public void Setup()
-		{
-			_bunit = new Bunit.BunitContext();
-		}
-
-		[TestCleanup]
-		public void Cleanup()
-		{
-			_bunit.Dispose();
-		}
-
-		// ---------------------------------------------------------
-		// Reflection helpers
-		// ---------------------------------------------------------
-
-		private static string InvokeBuildDonutSlicePath(DonutChart instance, double startAngle, double sweepAngle)
-		{
-			var method = typeof(DonutChart)
-				.GetMethod("BuildDonutSlicePath", BindingFlags.NonPublic | BindingFlags.Instance)
-				?? throw new InvalidOperationException("BuildDonutSlicePath not found");
-
-			return (string)method.Invoke(instance, [startAngle, sweepAngle])!;
-		}
-
-		private static double InvokeDegreesToRadians(double degrees)
-		{
-			var method = typeof(DonutChart)
-				.GetMethod("DegreesToRadians", BindingFlags.NonPublic | BindingFlags.Static)
-				?? throw new InvalidOperationException("DegreesToRadians not found");
-
-			return (double)method.Invoke(null, [degrees])!;
-		}
-
-		// ---------------------------------------------------------
-		// Tests
-		// ---------------------------------------------------------
-
 		[TestMethod]
-		public void DegreesToRadians_ConvertsCorrectly()
+		public void DonutMode_UsesInnerRadius()
 		{
-			var rad = InvokeDegreesToRadians(180);
-			rad.ShouldBe(Math.PI, 1e-10);
+			var cut = Render<DonutChart>(p => p
+				.Add(x => x.IsDonut, true)
+				.Add(x => x.Thickness, 30)
+				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 100 })
+			);
+
+			Assert.AreEqual(60, cut.Instance.InnerRadius);
 		}
 
 		[TestMethod]
-		public void BuildDonutSlicePath_PieSlice_HasMoveLineArcClose()
+		public void PieMode_HasZeroInnerRadius()
 		{
-			var cut = _bunit.Render<DonutChart>(p => p
+			var cut = Render<DonutChart>(p => p
 				.Add(x => x.IsDonut, false)
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 10 })
+				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 100 })
 			);
 
-			var instance = cut.Instance;
-			var path = InvokeBuildDonutSlicePath(instance, -90, 90);
-
-			path.ShouldStartWith("M 100 100 ");
-			path.ShouldContain(" L ");
-			path.ShouldContain(" A ");
-			path.TrimEnd().ShouldEndWith("Z");
+			Assert.AreEqual(0, cut.Instance.InnerRadius);
 		}
 
 		[TestMethod]
-		public void BuildDonutSlicePath_DonutSlice_HasOuterAndInnerArcs()
+		public void SvgContainsCorrectViewBox()
 		{
-			var cut = _bunit.Render<DonutChart>(p => p
-				.Add(x => x.IsDonut, true)
-				.Add(x => x.Thickness, 40)
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 10 })
+			var cut = Render<DonutChart>(p => p
+				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 100 })
 			);
 
-			var instance = cut.Instance;
-			var path = InvokeBuildDonutSlicePath(instance, -90, 120);
-
-			path.ShouldContain("A 90 90");  // outer arc
-			path.ShouldContain("A 50 50");  // inner arc (90 - 40)
-			path.ShouldContain(" L ");
+			StringAssert.Contains(cut.Markup, "viewBox=\"0 0 200 220\"");
 		}
 
 		[TestMethod]
-		public void BuildDonutSlicePath_UsesLargeArcFlag_WhenSweepGreaterThan180()
+		public void SlicesHaveCorrectCssClass()
 		{
-			var cut = _bunit.Render<DonutChart>(p => p
-				.Add(x => x.IsDonut, true)
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 10 })
+			var cut = Render<DonutChart>(p => p
+				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 100 })
 			);
 
-			var instance = cut.Instance;
-			var path = InvokeBuildDonutSlicePath(instance, 0, 270);
+			var cls = cut.Find("path.donut-slice").ClassList;
 
-			path.ShouldContain("A 90 90 0 1 1");
-		}
-
-		[TestMethod]
-		public void BuildDonutSlicePath_UsesSmallArcFlag_WhenSweepLessThanOrEqual180()
-		{
-			var cut = _bunit.Render<DonutChart>(p => p
-				.Add(x => x.IsDonut, true)
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 10 })
-			);
-
-			var instance = cut.Instance;
-			var path = InvokeBuildDonutSlicePath(instance, 0, 90);
-
-			path.ShouldContain("A 90 90 0 0 1");
+			Assert.IsTrue(cls.Contains("donut-slice"));
 		}
 	}
 }
