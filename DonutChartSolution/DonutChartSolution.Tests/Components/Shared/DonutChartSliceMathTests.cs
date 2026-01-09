@@ -12,12 +12,15 @@ namespace DonutChartSolution.Tests.Components.Shared
 		[TestMethod]
 		public void ZeroValueSlices_AreIgnored()
 		{
+			var data = new Dictionary<string, int>
+			{
+				["A"] = 0,
+				["B"] = 50
+			};
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int>
-				{
-					["A"] = 0,
-					["B"] = 50
-				})
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 			);
 
 			Assert.AreEqual(1, cut.FindAll("path.donut-slice").Count);
@@ -26,12 +29,15 @@ namespace DonutChartSolution.Tests.Components.Shared
 		[TestMethod]
 		public void AllZeroValues_ProduceNoSlices()
 		{
+			var data = new Dictionary<string, int>
+			{
+				["A"] = 0,
+				["B"] = 0
+			};
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int>
-				{
-					["A"] = 0,
-					["B"] = 0
-				})
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 			);
 
 			Assert.AreEqual(0, cut.FindAll("path.donut-slice").Count);
@@ -40,8 +46,11 @@ namespace DonutChartSolution.Tests.Components.Shared
 		[TestMethod]
 		public void SingleSlice_FillsFullCircle()
 		{
+			var data = new Dictionary<string, int> { ["A"] = 100 };
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 100 })
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 			);
 
 			var path = cut.Find("path.donut-slice").GetAttribute("d");
@@ -52,12 +61,15 @@ namespace DonutChartSolution.Tests.Components.Shared
 		[TestMethod]
 		public void LargeValues_StillProduceValidAngles()
 		{
+			var data = new Dictionary<string, int>
+			{
+				["A"] = 1_000_000,
+				["B"] = 500_000
+			};
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int>
-				{
-					["A"] = 1_000_000,
-					["B"] = 500_000
-				})
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 			);
 
 			Assert.AreEqual(2, cut.FindAll("path.donut-slice").Count);

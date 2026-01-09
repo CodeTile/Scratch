@@ -3,23 +3,16 @@
 
 <div class="donut-chart-container">
 
+    @if (!string.IsNullOrWhiteSpace(Title))
+    {
+        <div class="donut-chart-title">@Title</div>
+    }
+
     <svg class="donut-chart-svg"
-         width="@Width"
-         height="@Height"
          viewBox="0 0 200 220"
+         preserveAspectRatio="xMidYMid meet"
          @onmouseleave="ClearHover">
 
-        @if (!string.IsNullOrWhiteSpace(Title))
-        {
-            <svg:text x="100"
-                  y="20"
-                  text-anchor="middle"
-                  class="donut-title">
-                @Title
-            </svg:text>
-        }
-
-        <!-- Shift entire chart down by 20px -->
         <g transform="translate(0, 20)">
 
             <g class="donut-slices">
@@ -40,31 +33,27 @@
                    @onclick="OnCenterClickAsync"
                    @onmouseover="OnCenterHover">
 
-                    <circle cx="100"
-                            cy="100"
-                            r="@InnerRadius"
-                            class="donut-center-circle" />
+                    <circle cx="100" cy="100" r="@InnerRadius" class="donut-center-circle" />
 
                     @if (!string.IsNullOrWhiteSpace(InnerTitle))
                     {
-                        <svg:text x="100"
-                              y="95"
-                              text-anchor="middle"
-                              class="donut-inner-title">
+                        <svg:text x="100" y="95" text-anchor="middle" class="donut-inner-title">
                             @InnerTitle
                         </svg:text>
                     }
 
-                    <svg:text x="100"
-                          y="115"
-                          text-anchor="middle"
-                          class="donut-inner-text">
+                    <svg:text x="100" y="115" text-anchor="middle" class="donut-inner-text">
                         @TotalValue.ToString("N0")
                     </svg:text>
                 </g>
             }
         </g>
     </svg>
+
+    @if (!IsDonut && IsEmpty)
+    {
+        <div class="donut-no-records-overlay">No records found</div>
+    }
 
     @if (ShowTooltip)
     {

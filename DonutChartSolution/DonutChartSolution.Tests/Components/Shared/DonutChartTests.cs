@@ -18,7 +18,10 @@ namespace DonutChartSolution.Tests.Components.Shared
 				["South"] = 50
 			};
 
-			var cut = Render<DonutChart>(p => p.Add(x => x.Data, data));
+			var cut = Render<DonutChart>(p => p
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
+			);
 
 			Assert.AreEqual(2, cut.FindAll("path.donut-slice").Count);
 		}
@@ -28,8 +31,11 @@ namespace DonutChartSolution.Tests.Components.Shared
 		{
 			string clicked = null;
 
+			var data = new Dictionary<string, int> { ["North"] = 100 };
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int> { ["North"] = 100 })
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 				.Add(x => x.OnSliceClick, label => clicked = label)
 			);
 
@@ -43,8 +49,11 @@ namespace DonutChartSolution.Tests.Components.Shared
 		{
 			bool clicked = false;
 
+			var data = new Dictionary<string, int> { ["A"] = 1 };
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 1 })
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 				.Add(x => x.IsDonut, true)
 				.Add(x => x.OnCenterClick, () => clicked = true)
 			);
@@ -57,8 +66,11 @@ namespace DonutChartSolution.Tests.Components.Shared
 		[TestMethod]
 		public void HoveringSlice_ShowsTooltip()
 		{
+			var data = new Dictionary<string, int> { ["North"] = 100 };
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int> { ["North"] = 100 })
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 			);
 
 			cut.Find("path.donut-slice").MouseOver();
@@ -69,25 +81,33 @@ namespace DonutChartSolution.Tests.Components.Shared
 		[TestMethod]
 		public void MouseLeave_HidesTooltip()
 		{
+			var data = new Dictionary<string, int> { ["North"] = 100 };
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int> { ["North"] = 100 })
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 			);
 
 			cut.Find("path.donut-slice").MouseOver();
 			cut.Find("svg").MouseLeave();
 
-			StringAssert.DoesNotMatch(cut.Markup, new System.Text.RegularExpressions.Regex("donut-tooltip"));
+			Assert.IsFalse(cut.Markup.Contains("donut-tooltip"));
 		}
 
 		[TestMethod]
 		public void UpdatingData_ReRendersSlices()
 		{
+			var initial = new Dictionary<string, int> { ["A"] = 10 };
+			var updated = new Dictionary<string, int> { ["A"] = 10, ["B"] = 20 };
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 10 })
+				.Add(x => x.Data, initial)
+				.Add(x => x.IncludeLabels, initial.Keys)
 			);
 
 			cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 10, ["B"] = 20 })
+				.Add(x => x.Data, updated)
+				.Add(x => x.IncludeLabels, updated.Keys)
 			);
 
 			Assert.AreEqual(2, cut.FindAll("path.donut-slice").Count);

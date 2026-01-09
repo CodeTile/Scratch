@@ -12,10 +12,13 @@ namespace DonutChartSolution.Tests.Components.Shared
 		[TestMethod]
 		public void DonutMode_UsesInnerRadius()
 		{
+			var data = new Dictionary<string, int> { ["A"] = 100 };
+
 			var cut = Render<DonutChart>(p => p
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 				.Add(x => x.IsDonut, true)
 				.Add(x => x.Thickness, 30)
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 100 })
 			);
 
 			Assert.AreEqual(60, cut.Instance.InnerRadius);
@@ -24,9 +27,12 @@ namespace DonutChartSolution.Tests.Components.Shared
 		[TestMethod]
 		public void PieMode_HasZeroInnerRadius()
 		{
+			var data = new Dictionary<string, int> { ["A"] = 100 };
+
 			var cut = Render<DonutChart>(p => p
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 				.Add(x => x.IsDonut, false)
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 100 })
 			);
 
 			Assert.AreEqual(0, cut.Instance.InnerRadius);
@@ -35,8 +41,11 @@ namespace DonutChartSolution.Tests.Components.Shared
 		[TestMethod]
 		public void SvgContainsCorrectViewBox()
 		{
+			var data = new Dictionary<string, int> { ["A"] = 100 };
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 100 })
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 			);
 
 			StringAssert.Contains(cut.Markup, "viewBox=\"0 0 200 220\"");
@@ -45,8 +54,11 @@ namespace DonutChartSolution.Tests.Components.Shared
 		[TestMethod]
 		public void SlicesHaveCorrectCssClass()
 		{
+			var data = new Dictionary<string, int> { ["A"] = 100 };
+
 			var cut = Render<DonutChart>(p => p
-				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 100 })
+				.Add(x => x.Data, data)
+				.Add(x => x.IncludeLabels, data.Keys)
 			);
 
 			var cls = cut.Find("path.donut-slice").ClassList;

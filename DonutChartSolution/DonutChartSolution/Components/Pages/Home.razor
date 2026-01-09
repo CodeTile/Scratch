@@ -1,73 +1,53 @@
 ﻿@page "/"
 @using DonutChartSolution.Components.Shared
-@inject NavigationManager Nav
 @rendermode InteractiveServer
-@*
-    <summary>
-    Demonstrates usage of the DonutChart component with:
-    - Donut mode (Sales by Region)
-    - Pie mode (Task Breakdown)
-    Handles navigation when slices or donut center are clicked.
-    </summary>
-*@
+
 <h3>Donut Chart Demo</h3>
 
-<div style="display:flex; gap:40px; flex-wrap:wrap;">
+<div class="chart-wrapper">
 
-    <DonutChart Title="Sales by Region"
-                InnerTitle="Total Sales"
-                IsDonut="true"
-                Width="220"
-                Height="300"
-                Thickness="20"
-                Data="@SalesData"
-                OnSliceClick="HandleSliceClick"
-                OnCenterClick="HandleCenterClick" />
+    <div class="chart-container">
+        <DonutChart Title="Sales by Region"
+                    InnerTitle="Total Sales"
+                    IsDonut="true"
+                    Thickness="40"
+                    Data="@SalesData"
+                    IncludeLabels="@CurrentSalesLabels"
+                    OnSliceClick="HandleSliceClick"
+                    OnCenterClick="HandleCenterClick" />
 
+        <div class="filter-text">
+            <strong>Filtered Regions:</strong>
+            @if (CurrentSalesLabels is not null)
+            {
+                <span>@string.Join(", ", CurrentSalesLabels)</span>
+            }
+            else
+            {
+                <span>(none)</span>
+            }
+        </div>
+    </div>
 
-    <DonutChart Title="Task Breakdown"
-                InnerTitle="Tasks"
-                IsDonut="false"
-                Width="320"
-                Height="320"
-                Items="@TaskItems"
-                OnSliceClick="HandleSliceClick" />
+    <div class="chart-container">
+        <DonutChart Title="Task Breakdown"
+                    InnerTitle="Tasks"
+                    IsDonut="false"
+                    Items="@TaskItems"
+                    IncludeLabels="@CurrentTaskLabels"
+                    OnSliceClick="HandleSliceClick" />
+
+        <div class="filter-text">
+            <strong>Filtered Tasks:</strong>
+            @if (CurrentTaskLabels is not null)
+            {
+                <span>@string.Join(", ", CurrentTaskLabels)</span>
+            }
+            else
+            {
+                <span>(none)</span>
+            }
+        </div>
+    </div>
 
 </div>
-
-@code {
-    /// <summary>
-    /// Sample sales data for the donut chart.
-    /// </summary>
-    private Dictionary<string, int> SalesData = new()
-    {
-        ["North"] = 120,
-        ["South"] = 80,
-        ["East"] = 140,
-        ["West"] = 60
-    };
-
-    /// <summary>
-    /// Sample task breakdown data for the pie chart.
-    /// </summary>
-    private IEnumerable<KeyValuePair<string, int>> TaskItems =
-        new List<KeyValuePair<string, int>>
-        {
-            new("Completed", 30),
-            new("In Progress", 15),
-            new("Blocked", 5)
-        };
-
-    private void HandleSliceClick(string label)
-    {
-        Console.WriteLine($"[Home] Slice clicked: {label}");
-        Nav.NavigateTo("/counter");
-    }
-
-    private void HandleCenterClick()
-    {
-        Console.WriteLine("[Home] Center clicked");
-        Nav.NavigateTo("/weather");
-    }
-
-}
