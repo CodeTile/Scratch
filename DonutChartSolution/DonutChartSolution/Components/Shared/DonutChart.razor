@@ -62,4 +62,19 @@
             <div class="donut-tooltip-value">@TooltipValue</div>
         </div>
     }
+
+    @if (ShowLegend && Slices.Any(s => s.Value > 0))
+    {
+        <div class="donut-legend">
+            @foreach (var slice in Slices.Where(s => s.Value > 0))
+            {
+                <div class="donut-legend-item">
+                    <span class="donut-legend-color" style="background:@slice.Color"></span>
+                    <span class="donut-legend-label">@slice.Label</span>
+                    <span class="donut-legend-value">@slice.Value</span>
+                </div>
+            }
+        </div>
+    }
+
 </div>

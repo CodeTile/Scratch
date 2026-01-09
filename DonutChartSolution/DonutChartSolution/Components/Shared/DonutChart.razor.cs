@@ -55,6 +55,11 @@ public partial class DonutChart : ComponentBase
 	[Parameter] public EventCallback OnCenterClick { get; set; }
 
 	/// <summary>
+	/// Whether to display the legend below the chart.
+	/// </summary>
+	[Parameter] public bool ShowLegend { get; set; } = false;
+
+	/// <summary>
 	/// Computed total of all visible slice values.
 	/// </summary>
 	protected int TotalValue => Slices.Sum(s => s.Value);
@@ -72,7 +77,7 @@ public partial class DonutChart : ComponentBase
 	/// <summary>
 	/// List of computed slices.
 	/// </summary>
-	protected List<DonutSlice> Slices { get; private set; } = new();
+	protected List<DonutSlice> Slices { get; private set; } = [];
 
 	/// <summary>
 	/// Whether the tooltip is visible.
@@ -104,11 +109,14 @@ public partial class DonutChart : ComponentBase
 	{
 		Slices.Clear();
 
-		IEnumerable<KeyValuePair<string, int>> source =
-			IsDonut
+		var source =
+			(IsDonut
 				? Data?.Where(d => IncludeLabels?.Contains(d.Key) ?? true)
-				: Items?.Where(i => IncludeLabels?.Contains(i.Key) ?? true)
-				?? Enumerable.Empty<KeyValuePair<string, int>>();
+				: Items?.Where(i => IncludeLabels?.Contains(i.Key) ?? true))
+			?? Enumerable.Empty<KeyValuePair<string, int>>();
+
+		// Remove zero-value and filter labels
+		source = source.Where(s => s.Value > 0);
 
 		int total = source.Sum(s => s.Value);
 		if (total < 1)

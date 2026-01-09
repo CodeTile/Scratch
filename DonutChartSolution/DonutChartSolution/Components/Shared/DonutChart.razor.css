@@ -6,7 +6,7 @@
 
 .donut-chart-svg {
     width: 100%;
-    height: 100%;
+    height: 85%;
 }
 
 .donut-chart-title {
@@ -87,4 +87,35 @@
     font-weight: 600;
     pointer-events: none;
     z-index: 50;
+}
+
+.donut-legend {
+    width: 100%;
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: #333;
+}
+
+.donut-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.donut-legend-color {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    display: inline-block;
+}
+
+.donut-legend-label {
+    flex: 1;
+}
+
+.donut-legend-value {
+    font-weight: 600;
 }
