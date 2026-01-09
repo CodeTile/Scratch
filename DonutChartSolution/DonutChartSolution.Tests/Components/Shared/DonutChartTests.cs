@@ -156,7 +156,7 @@ namespace DonutChartSolution.Tests.Components.Shared
 			var cut = _bunit.Render<DonutChart>(p => p
 				.Add(x => x.IsDonut, true)
 				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 10 })
-				.Add(x => x.OnCenterSelected, EventCallback.Factory.Create(this, () => clicked = true))
+				.Add(x => x.OnCenterClick, EventCallback.Factory.Create(this, () => clicked = true))
 			);
 
 			cut.Find("g.donut-center").Click();
@@ -172,7 +172,7 @@ namespace DonutChartSolution.Tests.Components.Shared
 			var cut = _bunit.Render<DonutChart>(p => p
 				.Add(x => x.IsDonut, false)
 				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 10 })
-				.Add(x => x.OnCenterSelected, EventCallback.Factory.Create(this, () => clicked = true))
+				.Add(x => x.OnCenterClick, EventCallback.Factory.Create(this, () => clicked = true))
 			);
 
 			Should.Throw<ElementNotFoundException>(() => cut.Find("g.donut-center"));
