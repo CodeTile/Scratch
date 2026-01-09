@@ -122,14 +122,17 @@ namespace DonutChartSolution.Components.Shared
 		[Parameter] public string Height { get; set; } = "300";
 
 		/// <summary>
-		/// Event raised when a slice is clicked. Provides the slice label.
+		/// Raised when a slice of the donut chart is clicked.
+		/// The string parameter contains the label of the clicked slice.
 		/// </summary>
-		[Parameter] public EventCallback<string> OnSliceSelected { get; set; }
+		[Parameter]
+		public EventCallback<string> OnSliceClick { get; set; }
 
 		/// <summary>
-		/// Event raised when the donut center is clicked.
+		/// Raised when the donut center is clicked.
 		/// </summary>
-		[Parameter] public EventCallback OnCenterSelected { get; set; }
+		[Parameter]
+		public EventCallback OnCenterClick { get; set; }
 
 		/// <summary>
 		/// Default color palette used when rendering slices.
@@ -239,13 +242,15 @@ namespace DonutChartSolution.Components.Shared
 			=> degrees * Math.PI / 180.0;
 
 		/// <summary>
-		/// Handles slice click events and raises the <see cref="OnSliceSelected"/> callback.
+		/// Handles slice click events and raises the <see cref="OnSliceClick"/> callback.
 		/// </summary>
+		/// <param name="slice">The slice that was clicked.</param>
 		private async Task OnSliceClickAsync(SliceInfo slice)
 		{
 			Console.WriteLine($"[DonutChart] Slice clicked: {slice.Label}");
-			if (OnSliceSelected.HasDelegate)
-				await OnSliceSelected.InvokeAsync(slice.Label);
+
+			if (OnSliceClick.HasDelegate)
+				await OnSliceClick.InvokeAsync(slice.Label);
 		}
 
 		/// <summary>
@@ -254,8 +259,9 @@ namespace DonutChartSolution.Components.Shared
 		private async Task OnCenterClickAsync()
 		{
 			Console.WriteLine("[DonutChart] Center clicked");
-			if (IsDonut && OnCenterSelected.HasDelegate)
-				await OnCenterSelected.InvokeAsync();
+
+			if (IsDonut && OnCenterClick.HasDelegate)
+				await OnCenterClick.InvokeAsync();
 		}
 
 		/// <summary>

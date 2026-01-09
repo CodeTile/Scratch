@@ -140,7 +140,7 @@ namespace DonutChartSolution.Tests.Components.Shared
 
 			var cut = _bunit.Render<DonutChart>(p => p
 				.Add(x => x.Data, new Dictionary<string, int> { ["A"] = 10 })
-				.Add(x => x.OnSliceSelected, (string label) => clicked = label)
+				.Add(x => x.OnSliceClick, (string label) => clicked = label)
 			);
 
 			cut.Find("path.donut-slice").Click();

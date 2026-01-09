@@ -1,7 +1,7 @@
 ﻿@page "/"
 @using DonutChartSolution.Components.Shared
 @inject NavigationManager Nav
-
+@rendermode InteractiveServer
 @*
     <summary>
     Demonstrates usage of the DonutChart component with:
@@ -14,7 +14,6 @@
 
 <div style="display:flex; gap:40px; flex-wrap:wrap;">
 
-    @* Donut chart example *@
     <DonutChart Title="Sales by Region"
                 InnerTitle="Total Sales"
                 IsDonut="true"
@@ -22,17 +21,18 @@
                 Height="300"
                 Thickness="20"
                 Data="@SalesData"
-                OnSliceSelected="HandleSliceClickAsync"
-                OnCenterSelected="HandleCenterClickAsync" />
+                OnSliceClick="HandleSliceClick"
+                OnCenterClick="HandleCenterClick" />
 
-    @* Pie chart example *@
+
     <DonutChart Title="Task Breakdown"
                 InnerTitle="Tasks"
                 IsDonut="false"
                 Width="320"
                 Height="320"
                 Items="@TaskItems"
-                OnSliceSelected="HandleSliceClickAsync" />
+                OnSliceClick="HandleSliceClick" />
+
 </div>
 
 @code {
@@ -58,21 +58,16 @@
             new("Blocked", 5)
         };
 
-    /// <summary>
-    /// Handles slice clicks and navigates to the Counter page.
-    /// </summary>
-    private void HandleSliceClickAsync(string label)
+    private void HandleSliceClick(string label)
     {
         Console.WriteLine($"[Home] Slice clicked: {label}");
         Nav.NavigateTo("/counter");
     }
 
-    /// <summary>
-    /// Handles donut center clicks and navigates to the Weather page.
-    /// </summary>
-    private void HandleCenterClickAsync()
+    private void HandleCenterClick()
     {
         Console.WriteLine("[Home] Center clicked");
         Nav.NavigateTo("/weather");
     }
+
 }
