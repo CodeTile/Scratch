@@ -7,7 +7,7 @@ namespace FluentUI.Components.Pages
 {
 	public partial class CheckList : ComponentBase
 	{
-		// Scenario 1: Employees
+		#region Scenario 1: Employees
 		public List<Employee> EmployeeList { get; set; } = DataHelper.GetMockEmployees();
 
 		public List<string> SelectedEmployeeIds { get; set; } = [];
@@ -20,8 +20,9 @@ namespace FluentUI.Components.Pages
 
 		private void OnEmployeeNamesChanged(List<string> names) =>
 			EmployeeNamesOutput = string.Join(", ", names);
+		#endregion
 
-		// Scenario 2: Simple Strings
+		#region Scenario 2: Simple Strings
 		public List<string> ColorList { get; set; } = ["Red", "Green", "Blue", "Yellow"];
 
 		public List<string> SelectedColors { get; set; } = [];
@@ -33,8 +34,9 @@ namespace FluentUI.Components.Pages
 
 		private void OnColorNamesChanged(List<string> names) =>
 			ColorOutput = string.Join(", ", names);
+		#endregion
 
-		// Scenario 3: Text-only Objects
+		#region Scenario 3: Text-only Objects
 		public List<string> DepartmentList { get; set; } = ["HR", "Finance", "IT", "Marketing"];
 
 		public List<string> SelectedDepartments { get; set; } = [];
@@ -46,5 +48,6 @@ namespace FluentUI.Components.Pages
 
 		private void OnDepartmentNamesChanged(List<string> names) =>
 			DepartmentOutput = string.Join(", ", names);
+		#endregion
 	}
 }
