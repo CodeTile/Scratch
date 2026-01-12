@@ -72,12 +72,12 @@ public partial class DonutChart : ComponentBase
 	/// <summary>
 	/// Inner radius of the donut ring.
 	/// </summary>
-	protected int InnerRadius => 100 - Thickness;
+	internal int InnerRadius => 100 - Thickness;
 
 	/// <summary>
 	/// List of computed slices.
 	/// </summary>
-	protected List<DonutSlice> Slices { get; private set; } = [];
+	internal List<DonutSlice> Slices { get; private set; } = [];
 
 	/// <summary>
 	/// Whether the tooltip is visible.
