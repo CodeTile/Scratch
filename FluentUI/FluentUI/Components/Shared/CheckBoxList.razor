@@ -3,25 +3,42 @@
 <div class="fui-checklist">
     @foreach (var item in Data)
     {
-        string text;
-        string value;
+        var text = TextField != null ? TextField(item) : item?.ToString() ?? string.Empty;
+        var value = ValueField != null ? ValueField(item)?.ToString() ?? text : text;
+        var isChecked = SelectedValues.Contains(value);
 
-        if (typeof(TItem) == typeof(string))
-        {
-            text = item?.ToString();
-            value = item?.ToString();
-        }
-        else
-        {
-            text = TextField(item);
-            value = ValueField(item)?.ToString();
-        }
-
-        <label class="fui-checklist-item">
+        <label>
             <input type="checkbox"
-                   checked="@SelectedValues.Contains(value)"
-                   @onchange="e => ToggleValue(value, text, e.Value)">
-            <span>@text</span>
+                   checked="@isChecked"
+                   @onchange="e => ToggleValue(value, text, e.Value)" />
+            @text
         </label>
     }
+
 </div>
+@* 
+    <summary>
+    Renders the checklist items for <see cref="CheckBoxList{TItem}"/>.
+
+    Each item in <see cref="Data"/> is displayed as a checkbox with:
+    - Checked state determined by <see cref="SelectedValues"/>
+    - Display text determined by <see cref="TextField"/> or the item's ToString()
+    - Value determined by <see cref="ValueField"/> or text
+
+    Excluded items (specified in <see cref="ExcludedTexts"/>) are rendered unchecked.
+
+    Example usage:
+    <CheckBoxList TItem="string"
+                  Data="@(new List<string> { "Apple", "Banana", "Cherry" })"
+                  SelectedValues="@SelectedFruits"
+                  SelectedValuesChanged="@(v => SelectedFruits = v)"
+                  SelectedTexts="@SelectedFruitTexts"
+                  SelectedTextsChanged="@(v => SelectedFruitTexts = v)"
+                  ExcludedTexts="@(new List<string> { "Banana" })" />
+
+    Result:
+    - Apple: checked
+    - Banana: unchecked
+    - Cherry: checked
+    </summary>
+*@

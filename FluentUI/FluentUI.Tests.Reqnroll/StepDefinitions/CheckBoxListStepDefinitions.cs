@@ -1,102 +1,105 @@
-namespace FluentUI.Tests.Reqnroll.StepDefinitions;
-
-using FluentUI.Tests.Reqnroll.Drivers;
-
-using Reqnroll;
-
-using Shouldly;
-
-[Binding]
-public class CheckBoxListStepDefinitions
+namespace FluentUI.Components.Tests.ReqNroll
 {
-	private readonly CheckBoxListDriver<object> _driver = new();
-
-	[Given(@"a new CheckBoxList component")]
-	public void GivenANewCheckBoxListComponent()
+	[Feature("CheckBoxList selection behavior")]
+	public class CheckBoxListSteps
 	{
-		_driver.Reset();
-	}
+		private TestableCheckBoxList<string> _component;
 
-	[Given(@"a CheckBoxList component with value ""(.*)"" and text ""(.*)"" selected")]
-	public void GivenAComponentWithPreselectedValue(string value, string text)
-	{
-		_driver.Component.SelectedValues.Add(value);
-		_driver.Component.SelectedTexts.Add(text);
-	}
-
-	[Given(@"a CheckBoxList component with values ""(.*)"" and texts ""(.*)"" selected")]
-	public void GivenMultiplePreselectedValues(string values, string texts)
-	{
-		var valueList = values.Split(',').Select(v => v.Trim());
-		var textList = texts.Split(',').Select(t => t.Trim());
-
-		_driver.Component.SelectedValues.AddRange(valueList);
-		_driver.Component.SelectedTexts.AddRange(textList);
-	}
-
-	[When(@"I toggle value ""(.*)"" with text ""(.*)"" as checked")]
-	public void WhenIToggleValueAsChecked(string value, string text)
-	{
-		_driver.Toggle(value, text, true);
-	}
-
-	[When(@"I toggle value ""(.*)"" with text ""(.*)"" as unchecked")]
-	public void WhenIToggleValueAsUnchecked(string value, string text)
-	{
-		_driver.Toggle(value, text, false);
-	}
-
-	[When(@"I toggle the following values:")]
-	public void WhenIToggleTheFollowingValues(Table table)
-	{
-		foreach (var row in table.Rows)
+		[Background]
+		public void Background()
 		{
-			var value = row["value"];
-			var text = row["text"];
-			_driver.Toggle(value, text, true);
+			_component = new TestableCheckBoxList<string>();
+			_component.OnParametersSetPublic();
 		}
-	}
 
-	[Then(@"the selected values should contain ""(.*)""")]
-	public void ThenSelectedValuesShouldContain(string value)
-	{
-		_driver.Component.SelectedValues.ShouldContain(value);
-	}
+		[Given(@"a CheckBoxList component with value ""(.*)"" and text ""(.*)"" selected")]
+		public Task GivenSingleSelected(string value, string text)
+		{
+			if (value == "<null>") value = null;
+			if (text == "<null>") text = null;
 
-	[Then(@"the selected texts should contain ""(.*)""")]
-	public void ThenSelectedTextsShouldContain(string text)
-	{
-		_driver.Component.SelectedTexts.ShouldContain(text);
-	}
+			_component.SelectedValues.Add(value);
+			_component.SelectedTexts.Add(text);
+			return Task.CompletedTask;
+		}
 
-	[Then(@"the selected values should not contain ""(.*)""")]
-	public void ThenSelectedValuesShouldNotContain(string value)
-	{
-		_driver.Component.SelectedValues.ShouldNotContain(value);
-	}
+		[Given(@"a CheckBoxList component with values ""(.*)"" and texts ""(.*)"" selected")]
+		public Task GivenMultipleSelected(string valuesCsv, string textsCsv)
+		{
+			var values = valuesCsv.Split(',').Select(v => v.Trim());
+			var texts = textsCsv.Split(',').Select(t => t.Trim());
 
-	[Then(@"the selected texts should not contain ""(.*)""")]
-	public void ThenSelectedTextsShouldNotContain(string text)
-	{
-		_driver.Component.SelectedTexts.ShouldNotContain(text);
-	}
+			_component.SelectedValues.AddRange(values);
+			_component.SelectedTexts.AddRange(texts);
+			return Task.CompletedTask;
+		}
 
-	[Then(@"the selected values count should be (.*)")]
-	public void ThenSelectedValuesCountShouldBe(int count)
-	{
-		_driver.Component.SelectedValues.Count.ShouldBe(count);
-	}
+		[When(@"I toggle value ""(.*)"" with text ""(.*)"" as (checked|unchecked)")]
+		public async Task WhenToggleValueAsync(string value, string text, string state)
+		{
+			if (value == "<null>") value = null;
+			if (text == "<null>") text = null;
 
-	[Then(@"the selected texts count should be (.*)")]
-	public void ThenSelectedTextsCountShouldBe(int count)
-	{
-		_driver.Component.SelectedTexts.Count.ShouldBe(count);
-	}
+			bool isChecked = state == "checked";
+			await Task.Run(() => _component.ToggleValue(value, text, isChecked));
+		}
 
-	[Then(@"the selected values should be in order ""(.*)""")]
-	public void ThenSelectedValuesShouldBeInOrder(string expectedCsv)
-	{
-		var expected = expectedCsv.Split(',').Select(x => x.Trim()).ToList();
-		_driver.Component.SelectedValues.ShouldBe(expected);
+		[When(@"I toggle the following values:")]
+		public async Task WhenToggleTableAsync(ReqNroll.DataTable table)
+		{
+			foreach (var row in table.Rows)
+			{
+				var value = row["value"];
+				var text = row["text"];
+				await Task.Run(() => _component.ToggleValue(value, text, true));
+			}
+		}
+
+		[Then(@"the selected values should contain ""(.*)""")]
+		public void ThenSelectedValuesContain(string value)
+		{
+			if (value == "<null>") value = null;
+			CollectionAssert.Contains(_component.SelectedValues, value);
+		}
+
+		[Then(@"the selected values should not contain ""(.*)""")]
+		public void ThenSelectedValuesNotContain(string value)
+		{
+			if (value == "<null>") value = null;
+			CollectionAssert.DoesNotContain(_component.SelectedValues, value);
+		}
+
+		[Then(@"the selected texts should contain ""(.*)""")]
+		public void ThenSelectedTextsContain(string text)
+		{
+			if (text == "<null>") text = null;
+			CollectionAssert.Contains(_component.SelectedTexts, text);
+		}
+
+		[Then(@"the selected texts should not contain ""(.*)""")]
+		public void ThenSelectedTextsNotContain(string text)
+		{
+			if (text == "<null>") text = null;
+			CollectionAssert.DoesNotContain(_component.SelectedTexts, text);
+		}
+
+		[Then(@"the selected values count should be (.*)")]
+		public void ThenSelectedValuesCount(int count)
+		{
+			Assert.AreEqual(count, _component.SelectedValues.Count);
+		}
+
+		[Then(@"the selected texts count should be (.*)")]
+		public void ThenSelectedTextsCount(int count)
+		{
+			Assert.AreEqual(count, _component.SelectedTexts.Count);
+		}
+
+		[Then(@"the selected values should be in order ""(.*)""")]
+		public void ThenSelectedValuesOrder(string csv)
+		{
+			var expected = csv.Split(',').Select(v => v.Trim()).ToList();
+			CollectionAssert.AreEqual(expected, _component.SelectedValues.ToList());
+		}
 	}
 }

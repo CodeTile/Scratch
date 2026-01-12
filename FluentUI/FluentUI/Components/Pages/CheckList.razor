@@ -39,7 +39,8 @@
                   SelectedValues="@SelectedColors"
                   SelectedValuesChanged="OnColorsChanged"
                   SelectedTexts="@SelectedColorNames"
-                  SelectedTextsChanged="OnColorNamesChanged" />
+                  SelectedTextsChanged="OnColorNamesChanged" 
+                  ExcludedTexts="@(new List<string> {"Blue"})"/>
 
     <div class="output-row">
         <label>Selected Colors:</label>
