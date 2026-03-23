@@ -1,0 +1,8 @@
+﻿<div class="redbar @PositionClass">How Now Brown Cow</div>
+
+@code {
+    [Parameter] public string Position { get; set; } = "Top";
+
+    private string PositionClass =>
+        Position?.ToLower() == "bottom" ? "redbar-bottom" : "redbar-top";
+}
