@@ -1,3 +1,4 @@
 <Solution>
+  <Project Path="Swagger10.Tests/Swagger10.Tests.csproj" Id="779f2b3d-a0cd-492c-bb65-4b0e20b2941f" />
   <Project Path="Swagger10/Swagger10.csproj" />
 </Solution>

@@ -1,4 +1,4 @@
-using Swagger10;
+using Swagger10.Startup;
 
 var builder = WebApplication.CreateBuilder(args);
 
