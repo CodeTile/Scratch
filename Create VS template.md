@@ -1,55 +1,65 @@
+Here you go, Bruce — **a complete, clean, fully‑regenerated set of instructions** for building your multi‑project `.NET` solution template using your **new directory structure** with `src/`, including:
 
-# 1. Final Template Folder Structure
+- Full folder layout  
+- Root template.json  
+- Project‑level template.json files  
+- Optional parameters (API, Portal, Tests)  
+- Automatic renaming of solution, projects, namespaces  
+- Packaging instructions  
+
+Everything is rewritten from scratch for clarity and correctness.
+
+---
+
+# ✅ 1. Final Template Folder Structure (with `src/`)
 
 ```
 DarkMode.Template/
 │
-├── .template.config/
-│   └── template.json
+├── DarkMode.Template.csproj
 │
-├── API/
-│   ├── DarkMode.API.csproj
-│   ├── DarkMode.API.Services.csproj
-│   ├── Tests/
-│   │   ├── DarkMode.API.Tests.csproj
-│   │   ├── DarkMode.API.Reqnroll.Tests.csproj
-│   │   ├── DarkMode.API.Services.Tests.csproj
-│   │   ├── DarkMode.API.Services.Reqnroll.Tests.csproj
-│   └── .template.config/
-│       └── template.json
-│
-├── Portal/
-│   ├── DarkMode.Blazor.csproj
-│   ├── Tests/
-│   │   ├── DarkMode.Blazor.Tests.csproj
-│   │   ├── DarkMode.Blazor.Bunit.Tests.csproj
-│   │   ├── DarkMode.Blazor.Reqnroll.Tests.csproj
-│   └── .template.config/
-│       └── template.json
-│
-└── DarkMode.sln
+└── src/
+    ├── .template.config/
+    │   └── template.json        <-- ROOT template
+    │
+    ├── API/
+    │   ├── DarkMode.API.csproj
+    │   ├── DarkMode.API.Services.csproj
+    │   ├── Tests/
+    │   │   ├── DarkMode.API.Tests.csproj
+    │   │   ├── DarkMode.API.Reqnroll.Tests.csproj
+    │   │   ├── DarkMode.API.Services.Tests.csproj
+    │   │   ├── DarkMode.API.Services.Reqnroll.Tests.csproj
+    │   └── .template.config/
+    │       └── template.json    <-- API project template
+    │
+    ├── Portal/
+    │   ├── DarkMode.Blazor.csproj
+    │   ├── Tests/
+    │   │   ├── DarkMode.Blazor.Tests.csproj
+    │   │   ├── DarkMode.Blazor.Bunit.Tests.csproj
+    │   │   ├── DarkMode.Blazor.Reqnroll.Tests.csproj
+    │   └── .template.config/
+    │       └── template.json    <-- Portal project template
+    │
+    └── DarkMode.sln
 ```
 
 ---
 
-# 2. Root template.json (solution-level)
+# 🎛️ 2. Root template.json (inside `src/.template.config/`)
 
-This file controls:
+This controls:
 
-- Renaming of **solution**, **projects**, **namespaces**, **folders**
-- Optional parameters:
-  - `api`
-  - `portal`
-  - `tests`
-- Conditional inclusion of folders
-
-Create:
+- Solution renaming  
+- Project + namespace renaming  
+- Optional parameters  
+- Conditional folder inclusion  
+- Excluding build artifacts  
 
 ```
-DarkMode.Template/.template.config/template.json
+src/.template.config/template.json
 ```
-
-Paste:
 
 ```json
 {
@@ -125,16 +135,14 @@ Paste:
 
 ---
 
-# 3. Project-level template.json files  
+# 🧩 3. Project‑level template.json files  
 These ensure project names + namespaces update correctly.
 
 ---
 
 ## API template.json  
-Create:
-
 ```
-API/.template.config/template.json
+src/API/.template.config/template.json
 ```
 
 ```json
@@ -151,10 +159,8 @@ API/.template.config/template.json
 ---
 
 ## Portal template.json  
-Create:
-
 ```
-Portal/.template.config/template.json
+src/Portal/.template.config/template.json
 ```
 
 ```json
@@ -170,27 +176,33 @@ Portal/.template.config/template.json
 
 ---
 
-# 4. Automatic renaming of test projects  
-Because `sourceName` cascades, all these will be renamed automatically:
+# 🔄 4. Automatic renaming  
+Because the root template uses:
 
-- `DarkMode.API.Tests`  
-- `DarkMode.API.Reqnroll.Tests`  
-- `DarkMode.API.Services.Tests`  
-- `DarkMode.API.Services.Reqnroll.Tests`  
-- `DarkMode.Blazor.Tests`  
-- `DarkMode.Blazor.Bunit.Tests`  
-- `DarkMode.Blazor.Reqnroll.Tests`
+```
+"sourceName": "DarkMode"
+```
 
-No extra config needed — the root `sourceName: "DarkMode"` handles all of them.
+Every file, folder, namespace, and project name containing **DarkMode** will be replaced with the new solution name.
+
+That includes:
+
+- DarkMode.API  
+- DarkMode.API.Services  
+- DarkMode.API.Tests  
+- DarkMode.API.Services.Reqnroll.Tests  
+- DarkMode.Blazor  
+- DarkMode.Blazor.Bunit.Tests  
+- DarkMode.Blazor.Reqnroll.Tests  
+
+No extra config needed.
 
 ---
 
-# 5. Template packaging project
-
-Create:
+# 📦 5. Packaging project (root)
 
 ```
-DarkMode.Template/DarkMode.Template.csproj
+DarkMode.Template.csproj
 ```
 
 ```xml
@@ -214,7 +226,7 @@ dotnet new -i bin/Debug/DarkMode.Template.1.0.0.nupkg
 
 ---
 
-# 6. Using your new template
+# 🚀 6. Using your template
 
 ### Full solution  
 ```
@@ -236,20 +248,14 @@ dotnet new darkmode -n MyProduct --api false
 dotnet new darkmode -n MyProduct --tests false
 ```
 
-### Everything off except API  
-```
-dotnet new darkmode -n MyProduct --portal false --tests false
-```
-
 ---
 
-#  Want me to generate the **entire template folder as a downloadable ZIP**?
+# Want me to generate the **ZIP‑ready folder**, with placeholder files and everything arranged exactly as shown?
 
-I can output the full structure with every file ready to paste into your repo.  
-Choose one:
+You can choose:
 
-- Generate ZIP‑ready folder structure
-- Add more optional parameters (e.g., Swagger, Auth, Docker)
+- Generate ZIP‑ready template folder
+- Add optional features like Swagger, Auth, Docker
 - Add CI/CD templates (GitHub Actions, Azure DevOps)
 
-Just tell me which direction you want to take.
+Just tell me which direction you want to go.
