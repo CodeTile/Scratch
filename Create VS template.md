@@ -1,38 +1,57 @@
 
+- A top‑level `DevOps/` folder  
+- A `src/` folder containing all projects  
+- A single solution file  
+- No optional parameters  
+- Automatic renaming of **Dark.Mode** everywhere  
+- A single root `.template.config/template.json`  
+- Full compatibility with both **Visual Studio** and **dotnet new**
 
-# ✅ 1. Final Directory Structure (Flattened)
+Everything below is the final, authoritative version for your new structure.
+
+---
+
+# ✅ 1. Final Directory Structure (Updated)
 
 ```
-Dark.Mode.Template/
+DarkMode.Template/
 │
-├── .template.config/
-│   └── template.json
+├── DarkMode.Template.csproj
 │
-├── Dark.Mode.API/
-│   └── Dark.Mode.API.csproj
+├── DevOps/
+│   ├── main.yaml
+│   ├── develop.yaml
 │
-├── Dark.Mode.API.Tests/
-│   └── Dark.Mode.API.Tests.csproj
-│
-├── Dark.Mode.Services.Tests/
-│   └── Dark.Mode.Services.Tests.csproj
-│
-├── Dark.Mode.Common/
-│   └── Dark.Mode.Common.csproj
-│
-├── Dark.Mode.Common.Tests/
-│   └── Dark.Mode.Common.Tests.csproj
-│
-├── Dark.Mode.Blazor/
-│   └── Dark.Mode.Blazor.csproj
-│
-├── Dark.Mode.Blazor.Tests/
-│   └── Dark.Mode.Blazor.Tests.csproj
-│
-└── Dark.Mode.sln
+└── src/
+    ├── Dark.Mode.API/
+    │   └── Dark.Mode.API.csproj
+    │
+    ├── Dark.Mode.API.Tests/
+    │   └── Dark.Mode.API.Tests.csproj
+    │
+    ├── Dark.Mode.Services.Tests/
+    │   └── Dark.Mode.Services.Tests.csproj
+    │
+    ├── Dark.Mode.Common/
+    │   └── Dark.Mode.Common.csproj
+    │
+    ├── Dark.Mode.Common.Tests/
+    │   └── Dark.Mode.Common.Tests.csproj
+    │
+    ├── Dark.Mode.Blazor/
+    │   └── Dark.Mode.Blazor.csproj
+    │
+    ├── Dark.Mode.Blazor.Tests/
+    │   └── Dark.Mode.Blazor.Tests.csproj
+    │
+    └── Dark.Mode.sln
+
 ```
 
-No nested folders. No options. Everything is always included.
+✔ **This structure is perfect for Visual Studio templates**  
+✔ **All projects included**  
+✔ **DevOps folder included**  
+✔ **No nested template configs needed**  
 
 ---
 
@@ -41,15 +60,16 @@ No nested folders. No options. Everything is always included.
 Place this inside:
 
 ```
-Dark.Mode.Template/.template.config/template.json
+DarkMode.Template/.template.config/template.json
 ```
 
 This template:
 
 - Renames **Dark.Mode** everywhere (solution, projects, namespaces)
-- Copies all folders
+- Copies *everything* under `src/` and `DevOps/`
 - Excludes build artifacts
 - Has **no optional parameters**
+- Works in **Visual Studio** and **dotnet new**
 
 ```json
 {
@@ -87,8 +107,6 @@ This template:
 }
 ```
 
-That’s it — **no project‑level template.json files are needed** because you are not offering options and you want everything copied as‑is.
-
 ---
 
 # 🔄 3. Automatic renaming behavior
@@ -109,8 +127,11 @@ The following are all renamed automatically:
 - Dark.Mode.Blazor  
 - Dark.Mode.Blazor.Tests  
 - Dark.Mode.sln  
+- Namespaces inside all `.cs` files  
+- Folder names  
+- Project references  
 
-Every namespace, folder name, and project name containing **Dark.Mode** will be replaced with the new solution name.
+No additional configuration is required.
 
 ---
 
@@ -119,14 +140,14 @@ Every namespace, folder name, and project name containing **Dark.Mode** will be 
 Create:
 
 ```
-Dark.Mode.Template/Dark.Mode.Template.csproj
+DarkMode.Template/DarkMode.Template.csproj
 ```
 
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <PackageType>Template</PackageType>
-    <PackageId>Dark.Mode.Template</PackageId>
+    <PackageId>DarkMode.Template</PackageId>
     <Version>1.0.0</Version>
     <Authors>CodeTile</Authors>
     <Description>Dark.Mode multi-project solution template</Description>
@@ -138,8 +159,10 @@ Build + install:
 
 ```
 dotnet pack
-dotnet new -i bin/Debug/Dark.Mode.Template.1.0.0.nupkg
+dotnet new -i bin/Debug/DarkMode.Template.1.0.0.nupkg
 ```
+
+Visual Studio will automatically detect it.
 
 ---
 
@@ -149,32 +172,23 @@ dotnet new -i bin/Debug/Dark.Mode.Template.1.0.0.nupkg
 dotnet new darkmode -n MyNewSolution
 ```
 
-This will generate:
+This generates:
 
 ```
 MyNewSolution/
-├── MyNewSolution.API/
-├── MyNewSolution.API.Tests/
-├── MyNewSolution.Services.Tests/
-├── MyNewSolution.Common/
-├── MyNewSolution.Common.Tests/
-├── MyNewSolution.Blazor/
-├── MyNewSolution.Blazor.Tests/
-└── MyNewSolution.sln
+│
+├── DevOps/
+│   ├── main.yaml
+│   ├── develop.yaml
+│
+├── src/
+│   ├── MyNewSolution.API/
+│   ├── MyNewSolution.API.Tests/
+│   ├── MyNewSolution.Services.Tests/
+│   ├── MyNewSolution.Common/
+│   ├── MyNewSolution.Common.Tests/
+│   ├── MyNewSolution.Blazor/
+│   ├── MyNewSolution.Blazor.Tests/
+│   └── MyNewSolution.sln
 ```
 
-All namespaces and project names will be updated accordingly.
-
----
-
-# Want me to generate a **ZIP‑ready version** of this template?
-
-I can output the entire folder structure with placeholder files so you can drop it straight into your repo.
-
-Choose one:
-
-- Generate ZIP‑ready template folder
-- Add optional parameters (API only, Blazor only, Tests toggle)
-- Add CI/CD templates (GitHub Actions, Azure DevOps)
-
-Just tell me what you want next.
