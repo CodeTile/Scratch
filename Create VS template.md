@@ -192,3 +192,135 @@ MyNewSolution/
 │   └── MyNewSolution.sln
 ```
 
+#######################################################################################
+
+### Test and Create solution
+
+Save as Test-template.ps1
+
+```
+# ================================
+# Ask for solution name
+# ================================
+$solutionName = Read-Host "Enter solution name (default: MyTestSolution)"
+if ([string]::IsNullOrWhiteSpace($solutionName)) {
+    $solutionName = "MyTestSolution"
+}
+
+Write-Host "Using solution name: $solutionName"
+
+# ================================
+# Clean build folders
+# ================================
+Write-Host "=== Cleaning build folders ==="
+if (Test-Path ".\bin") { Remove-Item ".\bin\*" -Recurse -Force }
+if (Test-Path ".\obj") { Remove-Item ".\obj\*" -Recurse -Force }
+
+# ================================
+# Uninstall all existing versions
+# ================================
+Write-Host "=== Uninstalling existing DarkMode.Template packages ==="
+$installed = dotnet new uninstall | Select-String "DarkMode.Template"
+while ($installed) {
+    dotnet new uninstall DarkMode.Template | Out-Null
+    $installed = dotnet new uninstall | Select-String "DarkMode.Template"
+}
+
+# ================================
+# Pack template
+# ================================
+Write-Host "=== Packing template ==="
+dotnet pack .\DarkMode.Template.csproj -o .\nupkg
+
+# ================================
+# Locate newest .nupkg
+# ================================
+Write-Host "=== Locating package ==="
+$pkg = Get-ChildItem .\nupkg\DarkMode.Template*.nupkg | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+if (-not $pkg) {
+    Write-Error "No .nupkg file found. Pack failed."
+    exit 1
+}
+
+Write-Host "=== Installing template: $($pkg.Name) ==="
+dotnet new install $pkg.FullName
+
+# ================================
+# Prepare test output folder
+# ================================
+Write-Host "=== Preparing test output folder ==="
+if (Test-Path ".\TestOutput") { Remove-Item ".\TestOutput" -Recurse -Force }
+New-Item -ItemType Directory -Path ".\TestOutput" | Out-Null
+Set-Location ".\TestOutput"
+
+# ================================
+# Generate solution
+# ================================
+Write-Host "=== Generating test solution ==="
+dotnet new darkmode -n $solutionName
+
+# ================================
+# Validate folder structure
+# ================================
+Write-Host "=== Validating folder structure ==="
+
+$expectedFolders = @(
+    "DevOps",
+    "src",
+    "src/$solutionName.API",
+    "src/$solutionName.Blazor",
+    "src/$solutionName.Common",
+    "src/$solutionName.API.Tests",
+    "src/$solutionName.Blazor.Tests",
+    "src/$solutionName.Common.Tests"
+)
+
+foreach ($folder in $expectedFolders) {
+    if (-not (Test-Path $folder)) {
+        Write-Error "Missing expected folder: $folder"
+        exit 1
+    }
+}
+
+# ================================
+# Validate solution file
+# ================================
+Write-Host "=== Validating solution file ==="
+if (-not (Test-Path "src/$solutionName.sln")) {
+    Write-Error "Solution file missing or incorrectly named."
+    exit 1
+}
+
+# ================================
+# Check for leftover template names
+# ================================
+Write-Host "=== Checking for leftover 'Dark.Mode' references ==="
+$leftovers = Get-ChildItem -Recurse -File | Select-String "Dark\.Mode"
+
+if ($leftovers) {
+    Write-Error "Found leftover 'Dark.Mode' references:"
+    $leftovers | ForEach-Object { Write-Host $_.Path }
+    exit 1
+}
+
+Write-Host "=== Folder and project name validation passed ==="
+
+# ================================
+# Run unit tests
+# ================================
+Write-Host "=== Running unit tests ==="
+Set-Location ".\$solutionName"
+
+$testResult = dotnet test --no-build
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Unit tests failed."
+    exit 1
+}
+
+Write-Host "=== All tests passed successfully ==="
+Write-Host "=== Template test completed successfully ==="
+
+
+```
