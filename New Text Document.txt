@@ -3,237 +3,14 @@
 BEGIN LARGE TEXT FILE
 
 =====================
-FILE: IGenericCrudRepository.cs
-
-using System.Linq.Expressions;
-using Microsoft.EntityFrameworkCore;
-
-public interface IGenericCrudRepository<TEntity> where TEntity : class
-{
-    Task<IServiceResult<TEntity>> AddAsync(
-        TEntity entity,
-        CancellationToken cancellationToken = default,
-        params Expression<Func<TEntity, object>>[] references);
-
-    Task<IServiceResult<IEnumerable<TEntity>>> AddBatchAsync(
-        IEnumerable<TEntity> entities,
-        CancellationToken cancellationToken = default,
-        params Expression<Func<TEntity, object>>[] references);
-
-    Task<IServiceResult<bool>> DeleteAsync(
-        Expression<Func<TEntity, bool>> predicate,
-        CancellationToken cancellationToken = default);
-
-    IQueryable<TEntity>? FindEntities(
-        Expression<Func<TEntity, bool>>? predicate = null,
-        params string[] includes);
-
-    Task<TEntity?> GetByIdAsync(
-        Expression<Func<TEntity, bool>> predicate,
-        CancellationToken cancellationToken = default,
-        params string[] includes);
-
-    Task<IServiceResult<TEntity>> UpdateAsync(
-        TEntity entity,
-        CancellationToken cancellationToken = default);
-
-    Task<IServiceResult<IEnumerable<TEntity>>> UpdateAsync(
-        IEnumerable<TEntity> entities,
-        CancellationToken cancellationToken = default);
-}
-
-=====================
-FILE: GenericCrudRepository.cs
-
-using System.Linq.Expressions;
-using Microsoft.EntityFrameworkCore;
-
-public class GenericCrudRepository<TEntity>(DbContext context)
-    : IGenericCrudRepository<TEntity> where TEntity : class
-{
-    private readonly DbContext _dbContext = context ?? throw new ArgumentNullException(nameof(context));
-
-    public async Task<IServiceResult<TEntity>> AddAsync(
-        TEntity entity,
-        CancellationToken cancellationToken = default,
-        params Expression<Func<TEntity, object>>[] references)
-    {
-        ArgumentNullException.ThrowIfNull(entity);
-
-        _dbContext.Set<TEntity>().Add(entity);
-
-        await LoadReferences(entity, references, cancellationToken);
-        var result = await _dbContext.SaveChangesAsync(cancellationToken);
-
-        return new ServiceResult<TEntity>
-        {
-            IsSuccess = result > 0,
-            Value = entity
-        };
-    }
-
-    public async Task<IServiceResult<IEnumerable<TEntity>>> AddBatchAsync(
-        IEnumerable<TEntity> entities,
-        CancellationToken cancellationToken = default,
-        params Expression<Func<TEntity, object>>[] references)
-    {
-        ArgumentNullException.ThrowIfNull(entities);
-
-        await _dbContext.Set<TEntity>().AddRangeAsync(entities, cancellationToken);
-
-        await LoadReferences(entities, references, cancellationToken);
-        var result = await _dbContext.SaveChangesAsync(cancellationToken);
-
-        return new ServiceResult<IEnumerable<TEntity>>
-        {
-            IsSuccess = entities.Count() == result,
-            Value = entities
-        };
-    }
-
-    public async Task<IServiceResult<bool>> DeleteAsync(
-        Expression<Func<TEntity, bool>> predicate,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(predicate);
-
-        var entities = FindEntities(predicate);
-        if (entities == null || !await entities.AnyAsync(cancellationToken))
-        {
-            return ServiceResult<bool>.Failure(false, "Unable to find record to delete!");
-        }
-
-        _dbContext.RemoveRange(entities);
-
-        try
-        {
-            int result = await _dbContext.SaveChangesAsync(cancellationToken);
-
-            return result == 1
-                ? ServiceResult<bool>.Success(true)
-                : ServiceResult<bool>.Failure(false);
-        }
-        catch (Exception ex)
-        {
-            return ServiceResult<bool>.Failure(false, ConvertExceptionToUserMessage(ex));
-        }
-    }
-
-    public IQueryable<TEntity>? FindEntities(
-        Expression<Func<TEntity, bool>>? predicate = null,
-        params string[] includes)
-    {
-        var query = ApplyIncludes(_dbContext.Set<TEntity>(), includes);
-        return predicate != null ? query.Where(predicate) : query;
-    }
-
-    public async Task<TEntity?> GetByIdAsync(
-        Expression<Func<TEntity, bool>> predicate,
-        CancellationToken cancellationToken = default,
-        params string[] includes)
-    {
-        ArgumentNullException.ThrowIfNull(predicate);
-
-        var query = ApplyIncludes(_dbContext.Set<TEntity>(), includes);
-        return await query.AsNoTracking().FirstOrDefaultAsync(predicate, cancellationToken);
-    }
-
-    public async Task<IServiceResult<TEntity>> UpdateAsync(
-        TEntity entity,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(entity);
-
-        _dbContext.Update(entity);
-
-        return new ServiceResult<TEntity>
-        {
-            IsSuccess = (1 == await _dbContext.SaveChangesAsync(cancellationToken)),
-            Value = entity
-        };
-    }
-
-    public async Task<IServiceResult<IEnumerable<TEntity>>> UpdateAsync(
-        IEnumerable<TEntity> entities,
-        CancellationToken cancellationToken = default)
-    {
-        _dbContext.UpdateRange(entities);
-
-        var result = await _dbContext.SaveChangesAsync(cancellationToken);
-
-        return new ServiceResult<IEnumerable<TEntity>>
-        {
-            IsSuccess = entities.Count() == result,
-            Value = entities
-        };
-    }
-
-    internal async Task<bool> DeleteAsync(
-        TEntity? entity,
-        CancellationToken cancellationToken = default)
-    {
-        if (entity == null)
-            return false;
-
-        _dbContext.Set<TEntity>().Remove(entity);
-        var result = await _dbContext.SaveChangesAsync(cancellationToken);
-
-        return result == 1;
-    }
-
-    private static IQueryable<TEntity> ApplyIncludes(
-        IQueryable<TEntity> query,
-        IEnumerable<string> includes)
-    {
-        return includes.Aggregate(query, (current, include) => current.Include(include));
-    }
-
-    private static string ConvertExceptionToUserMessage(Exception ex)
-    {
-        ArgumentNullException.ThrowIfNull(ex);
-
-        string message = ex.InnerException != null
-            ? ConvertExceptionToUserMessage(ex.InnerException)
-            : ex.Message;
-
-        if (message.Contains("REFERENCE constraint", StringComparison.OrdinalIgnoreCase))
-            return "Unable to delete, record is referenced elsewhere!";
-
-        return message;
-    }
-
-    private async Task LoadReferences(
-        TEntity entity,
-        IEnumerable<Expression<Func<TEntity, object>>> references,
-        CancellationToken cancellationToken)
-    {
-        foreach (var reference in references)
-        {
-            await _dbContext.Entry(entity).Reference(reference!).LoadAsync(cancellationToken);
-        }
-    }
-
-    private async Task LoadReferences(
-        IEnumerable<TEntity> entities,
-        IEnumerable<Expression<Func<TEntity, object>>> references,
-        CancellationToken cancellationToken)
-    {
-        foreach (var entity in entities)
-        {
-            await LoadReferences(entity, references, cancellationToken);
-        }
-    }
-}
-
-=====================
-FILE: AddTests.cs
+FILE: CancellationTokenTests.cs
 
 using Microsoft.EntityFrameworkCore;
 using Shouldly;
 using Xunit;
 using System.Threading;
 
-public class AddTests
+public class CancellationTokenTests
 {
     private TestDbContext CreateContext()
     {
@@ -244,37 +21,29 @@ public class AddTests
         return new TestDbContext(options);
     }
 
+    // ------------------------------------------------------------
+    // AddAsync
+    // ------------------------------------------------------------
     [Fact]
-    public async Task AddAsync_ShouldAddEntity_AndReturnSuccess()
+    public async Task AddAsync_ShouldCancel_WhenTokenCancelled()
     {
         // Arrange
         var ctx = CreateContext();
         var repo = new GenericCrudRepository<FooBar>(ctx);
         var entity = new FooBar { Id = 1, Name = "A" };
-
-        // Act
-        var result = await repo.AddAsync(entity, CancellationToken.None);
-
-        // Assert
-        result.IsSuccess.ShouldBeTrue();
-        result.Value.ShouldBe(entity);
-        ctx.FooBars.Count().ShouldBe(1);
-    }
-
-    [Fact]
-    public async Task AddAsync_ShouldThrow_WhenEntityIsNull()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
 
         // Act + Assert
-        await Should.ThrowAsync<ArgumentNullException>(() =>
-            repo.AddAsync(null!, CancellationToken.None));
+        await Should.ThrowAsync<TaskCanceledException>(() =>
+            repo.AddAsync(entity, cts.Token));
     }
 
+    // ------------------------------------------------------------
+    // AddBatchAsync
+    // ------------------------------------------------------------
     [Fact]
-    public async Task AddBatchAsync_ShouldAddEntities_AndReturnSuccess()
+    public async Task AddBatchAsync_ShouldCancel_WhenTokenCancelled()
     {
         // Arrange
         var ctx = CreateContext();
@@ -284,49 +53,19 @@ public class AddTests
             new FooBar { Id = 1, Name = "A" },
             new FooBar { Id = 2, Name = "B" }
         };
-
-        // Act
-        var result = await repo.AddBatchAsync(entities, CancellationToken.None);
-
-        // Assert
-        result.IsSuccess.ShouldBeTrue();
-        result.Value.ShouldBe(entities);
-        ctx.FooBars.Count().ShouldBe(2);
-    }
-
-    [Fact]
-    public async Task AddBatchAsync_ShouldThrow_WhenEntitiesNull()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
 
         // Act + Assert
-        await Should.ThrowAsync<ArgumentNullException>(() =>
-            repo.AddBatchAsync(null!, CancellationToken.None));
-    }
-}
-=====================
-FILE: UpdateTests.cs
-
-using Microsoft.EntityFrameworkCore;
-using Shouldly;
-using Xunit;
-using System.Threading;
-
-public class UpdateTests
-{
-    private TestDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<TestDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-
-        return new TestDbContext(options);
+        await Should.ThrowAsync<TaskCanceledException>(() =>
+            repo.AddBatchAsync(entities, cts.Token));
     }
 
+    // ------------------------------------------------------------
+    // UpdateAsync (single)
+    // ------------------------------------------------------------
     [Fact]
-    public async Task UpdateAsync_ShouldUpdateEntity_AndReturnSuccess()
+    public async Task UpdateAsync_ShouldCancel_WhenTokenCancelled()
     {
         // Arrange
         var ctx = CreateContext();
@@ -335,30 +74,19 @@ public class UpdateTests
         ctx.ChangeTracker.Clear();
         var repo = new GenericCrudRepository<FooBar>(ctx);
         var updated = new FooBar { Id = 1, Name = "New" };
-
-        // Act
-        var result = await repo.UpdateAsync(updated, CancellationToken.None);
-
-        // Assert
-        result.IsSuccess.ShouldBeTrue();
-        result.Value.ShouldBe(updated);
-        ctx.FooBars.First().Name.ShouldBe("New");
-    }
-
-    [Fact]
-    public async Task UpdateAsync_ShouldThrow_WhenEntityNull()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
 
         // Act + Assert
-        await Should.ThrowAsync<ArgumentNullException>(() =>
-            repo.UpdateAsync((FooBar)null!, CancellationToken.None));
+        await Should.ThrowAsync<TaskCanceledException>(() =>
+            repo.UpdateAsync(updated, cts.Token));
     }
 
+    // ------------------------------------------------------------
+    // UpdateAsync (batch)
+    // ------------------------------------------------------------
     [Fact]
-    public async Task UpdateBatchAsync_ShouldUpdateEntities_AndReturnSuccess()
+    public async Task UpdateBatchAsync_ShouldCancel_WhenTokenCancelled()
     {
         // Arrange
         var ctx = CreateContext();
@@ -374,133 +102,38 @@ public class UpdateTests
             new FooBar { Id = 1, Name = "X" },
             new FooBar { Id = 2, Name = "Y" }
         };
-
-        // Act
-        var result = await repo.UpdateAsync(updated, CancellationToken.None);
-
-        // Assert
-        result.IsSuccess.ShouldBeTrue();
-        ctx.FooBars.First(e => e.Id == 1).Name.ShouldBe("X");
-        ctx.FooBars.First(e => e.Id == 2).Name.ShouldBe("Y");
-    }
-}
-
-=====================
-FILE: DeleteTests.cs
-
-using Microsoft.EntityFrameworkCore;
-using Shouldly;
-using Xunit;
-using System.Threading;
-
-public class DeleteTests
-{
-    private TestDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<TestDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-
-        return new TestDbContext(options);
-    }
-
-    [Fact]
-    public async Task DeleteAsync_ShouldThrow_WhenPredicateNull()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
 
         // Act + Assert
-        await Should.ThrowAsync<ArgumentNullException>(() =>
-            repo.DeleteAsync(null!, CancellationToken.None));
+        await Should.ThrowAsync<TaskCanceledException>(() =>
+            repo.UpdateAsync(updated, cts.Token));
     }
 
+    // ------------------------------------------------------------
+    // DeleteAsync (predicate)
+    // ------------------------------------------------------------
     [Fact]
-    public async Task DeleteAsync_ShouldReturnFailure_WhenNoMatch()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-
-        // Act
-        var result = await repo.DeleteAsync(e => e.Id == 999, CancellationToken.None);
-
-        // Assert
-        result.IsSuccess.ShouldBeFalse();
-        result.Message.ShouldBe("Unable to find record to delete!");
-    }
-
-    [Fact]
-    public async Task DeleteAsync_ShouldReturnSuccess_WhenOneEntityDeleted()
+    public async Task DeleteAsync_ShouldCancel_WhenTokenCancelled()
     {
         // Arrange
         var ctx = CreateContext();
         ctx.FooBars.Add(new FooBar { Id = 1 });
         await ctx.SaveChangesAsync();
         var repo = new GenericCrudRepository<FooBar>(ctx);
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
 
-        // Act
-        var result = await repo.DeleteAsync(e => e.Id == 1, CancellationToken.None);
-
-        // Assert
-        result.IsSuccess.ShouldBeTrue();
-        result.Value.ShouldBeTrue();
+        // Act + Assert
+        await Should.ThrowAsync<TaskCanceledException>(() =>
+            repo.DeleteAsync(e => e.Id == 1, cts.Token));
     }
 
+    // ------------------------------------------------------------
+    // DeleteAsync (entity)
+    // ------------------------------------------------------------
     [Fact]
-    public async Task DeleteAsync_ShouldReturnFailure_WhenMultipleEntitiesDeleted()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        ctx.FooBars.AddRange(
-            new FooBar { Id = 1 },
-            new FooBar { Id = 2 }
-        );
-        await ctx.SaveChangesAsync();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-
-        // Act
-        var result = await repo.DeleteAsync(e => e.Id > 0, CancellationToken.None);
-
-        // Assert
-        result.IsSuccess.ShouldBeFalse();
-    }
-
-    [Fact]
-    public async Task DeleteAsync_ShouldReturnFailure_WhenExceptionThrown()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        ctx.FooBars.Add(new FooBar { Id = 1 });
-        await ctx.SaveChangesAsync();
-        ctx.Dispose();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-
-        // Act
-        var result = await repo.DeleteAsync(e => e.Id == 1, CancellationToken.None);
-
-        // Assert
-        result.IsSuccess.ShouldBeFalse();
-        result.Message.ShouldNotBeNull();
-    }
-
-    [Fact]
-    public async Task DeleteEntityAsync_ShouldReturnFalse_WhenNull()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-
-        // Act
-        var result = await repo.DeleteAsync((FooBar?)null, CancellationToken.None);
-
-        // Assert
-        result.ShouldBeFalse();
-    }
-
-    [Fact]
-    public async Task DeleteEntityAsync_ShouldReturnTrue_WhenDeleted()
+    public async Task DeleteEntityAsync_ShouldCancel_WhenTokenCancelled()
     {
         // Arrange
         var ctx = CreateContext();
@@ -508,181 +141,31 @@ public class DeleteTests
         ctx.FooBars.Add(entity);
         await ctx.SaveChangesAsync();
         var repo = new GenericCrudRepository<FooBar>(ctx);
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
 
-        // Act
-        var result = await repo.DeleteAsync(entity, CancellationToken.None);
-
-        // Assert
-        result.ShouldBeTrue();
-    }
-}
-=====================
-FILE: QueryTests.cs
-
-using Microsoft.EntityFrameworkCore;
-using Shouldly;
-using Xunit;
-using System.Threading;
-
-public class QueryTests
-{
-    private TestDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<TestDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-
-        return new TestDbContext(options);
+        // Act + Assert
+        await Should.ThrowAsync<TaskCanceledException>(() =>
+            repo.DeleteAsync(entity, cts.Token));
     }
 
+    // ------------------------------------------------------------
+    // GetByIdAsync
+    // ------------------------------------------------------------
     [Fact]
-    public void FindEntities_ShouldReturnAll_WhenPredicateNull()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        ctx.FooBars.Add(new FooBar { Id = 1 });
-        ctx.SaveChanges();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-
-        // Act
-        var result = repo.FindEntities();
-
-        // Assert
-        result.ShouldNotBeNull();
-        result.Count().ShouldBe(1);
-    }
-
-    [Fact]
-    public void FindEntities_ShouldFilterCorrectly()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        ctx.FooBars.AddRange(
-            new FooBar { Id = 1 },
-            new FooBar { Id = 2 }
-        );
-        ctx.SaveChanges();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-
-        // Act
-        var result = repo.FindEntities(e => e.Id == 2);
-
-        // Assert
-        result!.Count().ShouldBe(1);
-        result.First().Id.ShouldBe(2);
-    }
-
-    [Fact]
-    public async Task GetByIdAsync_ShouldReturnEntity_WhenExists()
+    public async Task GetByIdAsync_ShouldCancel_WhenTokenCancelled()
     {
         // Arrange
         var ctx = CreateContext();
         ctx.FooBars.Add(new FooBar { Id = 1 });
         await ctx.SaveChangesAsync();
         var repo = new GenericCrudRepository<FooBar>(ctx);
-
-        // Act
-        var result = await repo.GetByIdAsync(e => e.Id == 1, CancellationToken.None);
-
-        // Assert
-        result.ShouldNotBeNull();
-        result!.Id.ShouldBe(1);
-    }
-
-    [Fact]
-    public async Task GetByIdAsync_ShouldReturnNull_WhenNotFound()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-
-        // Act
-        var result = await repo.GetByIdAsync(e => e.Id == 999, CancellationToken.None);
-
-        // Assert
-        result.ShouldBeNull();
-    }
-}
-
-=====================
-FILE: HelperTests.cs
-
-using Microsoft.EntityFrameworkCore;
-using Shouldly;
-using Xunit;
-using System.Threading;
-using System.Linq.Expressions;
-
-public class HelperTests
-{
-    private TestDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<TestDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-
-        return new TestDbContext(options);
-    }
-
-    [Fact]
-    public void ConvertExceptionToUserMessage_ShouldReturnReferenceMessage()
-    {
-        // Arrange
-        var ex = new Exception("REFERENCE constraint failed");
-
-        // Act
-        var msg = typeof(GenericCrudRepository<FooBar>)
-            .GetMethod("ConvertExceptionToUserMessage", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
-            .Invoke(null, new object[] { ex }) as string;
-
-        // Assert
-        msg.ShouldBe("Unable to delete, record is referenced elsewhere!");
-    }
-
-    [Fact]
-    public void ConvertExceptionToUserMessage_ShouldReturnInnerMessage()
-    {
-        // Arrange
-        var ex = new Exception("Outer", new Exception("Inner error"));
-
-        // Act
-        var msg = typeof(GenericCrudRepository<FooBar>)
-            .GetMethod("ConvertExceptionToUserMessage", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
-            .Invoke(null, new object[] { ex }) as string;
-
-        // Assert
-        msg.ShouldBe("Inner error");
-    }
-
-    [Fact]
-    public async Task LoadReferences_ShouldNotThrow()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-        var entity = new FooBar { Id = 1 };
-
-        var method = typeof(GenericCrudRepository<FooBar>)
-            .GetMethod(
-                "LoadReferences",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
-                null,
-                new[] { typeof(FooBar), typeof(IEnumerable<Expression<Func<FooBar, object>>>), typeof(CancellationToken) },
-                null
-            )!;
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
 
         // Act + Assert
-        await Should.NotThrowAsync(async () =>
-            await (Task)method.Invoke(
-                repo,
-                new object[]
-                {
-                    entity,
-                    Array.Empty<Expression<Func<FooBar, object>>>(),
-                    CancellationToken.None
-                }
-            )!
-        );
+        await Should.ThrowAsync<TaskCanceledException>(() =>
+            repo.GetByIdAsync(e => e.Id == 1, cts.Token));
     }
 }
 
