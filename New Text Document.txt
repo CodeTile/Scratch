@@ -1,0 +1,441 @@
+Bruce, here is the **entire test suite rendered as ONE large plain‑text file**, with each file separated by a line of:
+
+=====================
+
+No markdown formatting, no code fences — just raw text you can paste directly into your project.
+
+---
+
+**BEGIN LARGE TEXT FILE**
+
+=====================
+FILE: TestDbContext.cs
+
+using Microsoft.EntityFrameworkCore;
+
+public class TestDbContext : DbContext
+{
+    public TestDbContext(DbContextOptions<TestDbContext> options)
+        : base(options) { }
+
+    public DbSet<TestEntity> TestEntities => Set<TestEntity>();
+}
+
+public class TestEntity
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+}
+
+=====================
+FILE: AddTests.cs
+
+using Microsoft.EntityFrameworkCore;
+using Shouldly;
+using Xunit;
+
+public class AddTests
+{
+    private TestDbContext CreateContext()
+    {
+        var options = new DbContextOptionsBuilder<TestDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        return new TestDbContext(options);
+    }
+
+    [Fact]
+    public async Task AddAsync_ShouldAddEntity_AndReturnSuccess()
+    {
+        var ctx = CreateContext();
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var entity = new TestEntity { Id = 1, Name = "A" };
+
+        var result = await repo.AddAsync(entity);
+
+        result.IsSuccess.ShouldBeTrue();
+        result.Value.ShouldBe(entity);
+        ctx.TestEntities.Count().ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task AddAsync_ShouldThrow_WhenEntityIsNull()
+    {
+        var ctx = CreateContext();
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        await Should.ThrowAsync<ArgumentNullException>(() =>
+            repo.AddAsync(null!));
+    }
+
+    [Fact]
+    public async Task AddBatchAsync_ShouldAddEntities_AndReturnSuccess()
+    {
+        var ctx = CreateContext();
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var entities = new[]
+        {
+            new TestEntity { Id = 1, Name = "A" },
+            new TestEntity { Id = 2, Name = "B" }
+        };
+
+        var result = await repo.AddBatchAsync(entities);
+
+        result.IsSuccess.ShouldBeTrue();
+        result.Value.ShouldBe(entities);
+        ctx.TestEntities.Count().ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task AddBatchAsync_ShouldThrow_WhenEntitiesNull()
+    {
+        var ctx = CreateContext();
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        await Should.ThrowAsync<ArgumentNullException>(() =>
+            repo.AddBatchAsync(null!));
+    }
+}
+
+=====================
+FILE: UpdateTests.cs
+
+using Microsoft.EntityFrameworkCore;
+using Shouldly;
+using Xunit;
+
+public class UpdateTests
+{
+    private TestDbContext CreateContext()
+    {
+        var options = new DbContextOptionsBuilder<TestDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        return new TestDbContext(options);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_ShouldUpdateEntity_AndReturnSuccess()
+    {
+        var ctx = CreateContext();
+        ctx.TestEntities.Add(new TestEntity { Id = 1, Name = "Old" });
+        await ctx.SaveChangesAsync();
+
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var updated = new TestEntity { Id = 1, Name = "New" };
+
+        var result = await repo.UpdateAsync(updated);
+
+        result.IsSuccess.ShouldBeTrue();
+        result.Value.ShouldBe(updated);
+        ctx.TestEntities.First().Name.ShouldBe("New");
+    }
+
+    [Fact]
+    public async Task UpdateAsync_ShouldThrow_WhenEntityNull()
+    {
+        var ctx = CreateContext();
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        await Should.ThrowAsync<ArgumentNullException>(() =>
+            repo.UpdateAsync((TestEntity)null!));
+    }
+
+    [Fact]
+    public async Task UpdateBatchAsync_ShouldUpdateEntities_AndReturnSuccess()
+    {
+        var ctx = CreateContext();
+        ctx.TestEntities.AddRange(
+            new TestEntity { Id = 1, Name = "A" },
+            new TestEntity { Id = 2, Name = "B" }
+        );
+        await ctx.SaveChangesAsync();
+
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var updated = new[]
+        {
+            new TestEntity { Id = 1, Name = "X" },
+            new TestEntity { Id = 2, Name = "Y" }
+        };
+
+        var result = await repo.UpdateAsync(updated);
+
+        result.IsSuccess.ShouldBeTrue();
+        ctx.TestEntities.First(e => e.Id == 1).Name.ShouldBe("X");
+        ctx.TestEntities.First(e => e.Id == 2).Name.ShouldBe("Y");
+    }
+}
+
+=====================
+FILE: DeleteTests.cs
+
+using Microsoft.EntityFrameworkCore;
+using Shouldly;
+using Xunit;
+
+public class DeleteTests
+{
+    private TestDbContext CreateContext()
+    {
+        var options = new DbContextOptionsBuilder<TestDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        return new TestDbContext(options);
+    }
+
+    [Fact]
+    public async Task DeleteAsync_ShouldThrow_WhenPredicateNull()
+    {
+        var ctx = CreateContext();
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        await Should.ThrowAsync<ArgumentNullException>(() =>
+            repo.DeleteAsync(null!));
+    }
+
+    [Fact]
+    public async Task DeleteAsync_ShouldReturnFailure_WhenNoMatch()
+    {
+        var ctx = CreateContext();
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var result = await repo.DeleteAsync(e => e.Id == 999);
+
+        result.IsSuccess.ShouldBeFalse();
+        result.Message.ShouldBe("Unable to find record to delete!");
+    }
+
+    [Fact]
+    public async Task DeleteAsync_ShouldReturnSuccess_WhenOneEntityDeleted()
+    {
+        var ctx = CreateContext();
+        ctx.TestEntities.Add(new TestEntity { Id = 1 });
+        await ctx.SaveChangesAsync();
+
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var result = await repo.DeleteAsync(e => e.Id == 1);
+
+        result.IsSuccess.ShouldBeTrue();
+        result.Value.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task DeleteAsync_ShouldReturnFailure_WhenMultipleEntitiesDeleted()
+    {
+        var ctx = CreateContext();
+        ctx.TestEntities.AddRange(
+            new TestEntity { Id = 1 },
+            new TestEntity { Id = 2 }
+        );
+        await ctx.SaveChangesAsync();
+
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var result = await repo.DeleteAsync(e => e.Id > 0);
+
+        result.IsSuccess.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task DeleteAsync_ShouldReturnFailure_WhenExceptionThrown()
+    {
+        var ctx = CreateContext();
+        ctx.TestEntities.Add(new TestEntity { Id = 1 });
+        await ctx.SaveChangesAsync();
+
+        ctx.Dispose(); // force exception
+
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var result = await repo.DeleteAsync(e => e.Id == 1);
+
+        result.IsSuccess.ShouldBeFalse();
+        result.Message.ShouldNotBeNull();
+    }
+
+    [Fact]
+    public async Task DeleteEntityAsync_ShouldReturnFalse_WhenNull()
+    {
+        var ctx = CreateContext();
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var result = await repo.DeleteAsync((TestEntity?)null);
+
+        result.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task DeleteEntityAsync_ShouldReturnTrue_WhenDeleted()
+    {
+        var ctx = CreateContext();
+        var entity = new TestEntity { Id = 1 };
+        ctx.TestEntities.Add(entity);
+        await ctx.SaveChangesAsync();
+
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var result = await repo.DeleteAsync(entity);
+
+        result.ShouldBeTrue();
+    }
+}
+
+=====================
+FILE: QueryTests.cs
+
+using Microsoft.EntityFrameworkCore;
+using Shouldly;
+using Xunit;
+
+public class QueryTests
+{
+    private TestDbContext CreateContext()
+    {
+        var options = new DbContextOptionsBuilder<TestDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        return new TestDbContext(options);
+    }
+
+    [Fact]
+    public void FindEntities_ShouldReturnAll_WhenPredicateNull()
+    {
+        var ctx = CreateContext();
+        ctx.TestEntities.Add(new TestEntity { Id = 1 });
+        ctx.SaveChanges();
+
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var result = repo.FindEntities();
+
+        result.ShouldNotBeNull();
+        result.Count().ShouldBe(1);
+    }
+
+    [Fact]
+    public void FindEntities_ShouldFilterCorrectly()
+    {
+        var ctx = CreateContext();
+        ctx.TestEntities.AddRange(
+            new TestEntity { Id = 1 },
+            new TestEntity { Id = 2 }
+        );
+        ctx.SaveChanges();
+
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var result = repo.FindEntities(e => e.Id == 2);
+
+        result!.Count().ShouldBe(1);
+        result.First().Id.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_ShouldReturnEntity_WhenExists()
+    {
+        var ctx = CreateContext();
+        ctx.TestEntities.Add(new TestEntity { Id = 1 });
+        await ctx.SaveChangesAsync();
+
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var result = await repo.GetByIdAsync(e => e.Id == 1);
+
+        result.ShouldNotBeNull();
+        result!.Id.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_ShouldReturnNull_WhenNotFound()
+    {
+        var ctx = CreateContext();
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var result = await repo.GetByIdAsync(e => e.Id == 999);
+
+        result.ShouldBeNull();
+    }
+}
+
+=====================
+FILE: HelperTests.cs
+
+using Microsoft.EntityFrameworkCore;
+using Shouldly;
+using Xunit;
+
+public class HelperTests
+{
+    private TestDbContext CreateContext()
+    {
+        var options = new DbContextOptionsBuilder<TestDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        return new TestDbContext(options);
+    }
+
+    [Fact]
+    public void ConvertExceptionToUserMessage_ShouldReturnReferenceMessage()
+    {
+        var ex = new Exception("REFERENCE constraint failed");
+
+        var msg = typeof(GenericCrudRepository<TestEntity>)
+            .GetMethod("ConvertExceptionToUserMessage", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+            .Invoke(null, new object[] { ex }) as string;
+
+        msg.ShouldBe("Unable to delete, record is referenced elsewhere!");
+    }
+
+    [Fact]
+    public void ConvertExceptionToUserMessage_ShouldReturnInnerMessage()
+    {
+        var ex = new Exception("Outer", new Exception("Inner error"));
+
+        var msg = typeof(GenericCrudRepository<TestEntity>)
+            .GetMethod("ConvertExceptionToUserMessage", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+            .Invoke(null, new object[] { ex }) as string;
+
+        msg.ShouldBe("Inner error");
+    }
+
+    [Fact]
+    public async Task LoadReferences_ShouldNotThrow()
+    {
+        var ctx = CreateContext();
+        var repo = new GenericCrudRepository<TestEntity>(ctx);
+
+        var entity = new TestEntity { Id = 1 };
+
+        var method = typeof(GenericCrudRepository<TestEntity>)
+            .GetMethod("LoadReferences", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance, null, new[] { typeof(TestEntity), typeof(IEnumerable<System.Linq.Expressions.Expression<Func<TestEntity, object>>>) }, null)!;
+
+        await Should.NotThrowAsync(async () =>
+            await (Task)method.Invoke(repo, new object[] { entity, Array.Empty<System.Linq.Expressions.Expression<Func<TestEntity, object>>>() })!
+        );
+    }
+}
+
+=====================
+
+**END LARGE TEXT FILE**
+
+---
+
+Bruce, if you want:
+
+- a `.csproj` for the test project  
+- a GitHub Actions CI pipeline  
+- Coverlet + ReportGenerator setup  
+- or merging these into fewer/more files  
+
+Just say the word.
