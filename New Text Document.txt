@@ -1,174 +1,43 @@
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="Code Coverage">
+        <Configuration>
 
+          <!-- Enforce minimum coverage -->
+          <MinimumCoverage>90</MinimumCoverage>
 
-BEGIN LARGE TEXT FILE
+          <!-- Merge async state machines -->
+          <MergeWithParent>true</MergeWithParent>
 
-=====================
-FILE: CancellationTokenTests.cs
+          <!-- Exclusions -->
+          <Exclude>
 
-using Microsoft.EntityFrameworkCore;
-using Shouldly;
-using Xunit;
-using System.Threading;
+            <!-- Reqnroll auto-generated feature bindings -->
+            <File>.*\.feature\.cs$</File>
 
-public class CancellationTokenTests
-{
-    private TestDbContext CreateContext()
-    {
-        var options = new DbContextOptionsBuilder<TestDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
+            <!-- Common auto-generated patterns -->
+            <File>.*\.g\.cs$</File>
+            <File>.*\.g\.i\.cs$</File>
+            <File>.*Designer\.cs$</File>
+            <File>.*\.generated\.cs$</File>
+            <File>.*ServiceReference\.cs$</File>
+            <File>.*Reference\.cs$</File>
+            <File>.*TemporaryGeneratedFile_.*\.cs$</File>
 
-        return new TestDbContext(options);
-    }
+            <!-- EF Core Migrations -->
+            <File>.*/Migrations/.*</File>
 
-    // ------------------------------------------------------------
-    // AddAsync
-    // ------------------------------------------------------------
-    [Fact]
-    public async Task AddAsync_ShouldCancel_WhenTokenCancelled()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-        var entity = new FooBar { Id = 1, Name = "A" };
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
+            <!-- gRPC generated code -->
+            <File>.*\.proto\.cs$</File>
 
-        // Act + Assert
-        await Should.ThrowAsync<TaskCanceledException>(() =>
-            repo.AddAsync(entity, cts.Token));
-    }
+            <!-- Razor generated code -->
+            <File>.*\.razor\.g\.cs$</File>
 
-    // ------------------------------------------------------------
-    // AddBatchAsync
-    // ------------------------------------------------------------
-    [Fact]
-    public async Task AddBatchAsync_ShouldCancel_WhenTokenCancelled()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-        var entities = new[]
-        {
-            new FooBar { Id = 1, Name = "A" },
-            new FooBar { Id = 2, Name = "B" }
-        };
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
+          </Exclude>
 
-        // Act + Assert
-        await Should.ThrowAsync<TaskCanceledException>(() =>
-            repo.AddBatchAsync(entities, cts.Token));
-    }
-
-    // ------------------------------------------------------------
-    // UpdateAsync (single)
-    // ------------------------------------------------------------
-    [Fact]
-    public async Task UpdateAsync_ShouldCancel_WhenTokenCancelled()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        ctx.FooBars.Add(new FooBar { Id = 1, Name = "Old" });
-        await ctx.SaveChangesAsync();
-        ctx.ChangeTracker.Clear();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-        var updated = new FooBar { Id = 1, Name = "New" };
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        // Act + Assert
-        await Should.ThrowAsync<TaskCanceledException>(() =>
-            repo.UpdateAsync(updated, cts.Token));
-    }
-
-    // ------------------------------------------------------------
-    // UpdateAsync (batch)
-    // ------------------------------------------------------------
-    [Fact]
-    public async Task UpdateBatchAsync_ShouldCancel_WhenTokenCancelled()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        ctx.FooBars.AddRange(
-            new FooBar { Id = 1, Name = "A" },
-            new FooBar { Id = 2, Name = "B" }
-        );
-        await ctx.SaveChangesAsync();
-        ctx.ChangeTracker.Clear();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-        var updated = new[]
-        {
-            new FooBar { Id = 1, Name = "X" },
-            new FooBar { Id = 2, Name = "Y" }
-        };
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        // Act + Assert
-        await Should.ThrowAsync<TaskCanceledException>(() =>
-            repo.UpdateAsync(updated, cts.Token));
-    }
-
-    // ------------------------------------------------------------
-    // DeleteAsync (predicate)
-    // ------------------------------------------------------------
-    [Fact]
-    public async Task DeleteAsync_ShouldCancel_WhenTokenCancelled()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        ctx.FooBars.Add(new FooBar { Id = 1 });
-        await ctx.SaveChangesAsync();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        // Act + Assert
-        await Should.ThrowAsync<TaskCanceledException>(() =>
-            repo.DeleteAsync(e => e.Id == 1, cts.Token));
-    }
-
-    // ------------------------------------------------------------
-    // DeleteAsync (entity)
-    // ------------------------------------------------------------
-    [Fact]
-    public async Task DeleteEntityAsync_ShouldCancel_WhenTokenCancelled()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        var entity = new FooBar { Id = 1 };
-        ctx.FooBars.Add(entity);
-        await ctx.SaveChangesAsync();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        // Act + Assert
-        await Should.ThrowAsync<TaskCanceledException>(() =>
-            repo.DeleteAsync(entity, cts.Token));
-    }
-
-    // ------------------------------------------------------------
-    // GetByIdAsync
-    // ------------------------------------------------------------
-    [Fact]
-    public async Task GetByIdAsync_ShouldCancel_WhenTokenCancelled()
-    {
-        // Arrange
-        var ctx = CreateContext();
-        ctx.FooBars.Add(new FooBar { Id = 1 });
-        await ctx.SaveChangesAsync();
-        var repo = new GenericCrudRepository<FooBar>(ctx);
-        var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        // Act + Assert
-        await Should.ThrowAsync<TaskCanceledException>(() =>
-            repo.GetByIdAsync(e => e.Id == 1, cts.Token));
-    }
-}
-
-=====================
-
-END LARGE TEXT FILE
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>
