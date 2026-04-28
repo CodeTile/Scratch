@@ -1,43 +1,175 @@
-<RunSettings>
-  <DataCollectionRunSettings>
-    <DataCollectors>
-      <DataCollector friendlyName="Code Coverage">
-        <Configuration>
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using NSubstitute;
+using Xunit;
 
-          <!-- Enforce minimum coverage -->
-          <MinimumCoverage>90</MinimumCoverage>
+// ------------------------------------------------------------
+// Dummy entity for testing
+// ------------------------------------------------------------
+public class Dummy
+{
+    public Dummy Child { get; set; }
+    public Dummy Other { get; set; }
+}
 
-          <!-- Merge async state machines -->
-          <MergeWithParent>true</MergeWithParent>
+// ------------------------------------------------------------
+// TestQueryable<T> to intercept Include() calls
+// ------------------------------------------------------------
+public class TestQueryable<T> : IQueryable<T>
+{
+    private readonly IQueryable<T> _inner;
 
-          <!-- Exclusions -->
-          <Exclude>
+    public TestQueryable(IQueryable<T> inner, IQueryProvider provider)
+    {
+        _inner = inner;
+        Provider = provider;
+        Expression = inner.Expression;
+    }
 
-            <!-- Reqnroll auto-generated feature bindings -->
-            <File>.*\.feature\.cs$</File>
+    public IEnumerator<T> GetEnumerator() => _inner.GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-            <!-- Common auto-generated patterns -->
-            <File>.*\.g\.cs$</File>
-            <File>.*\.g\.i\.cs$</File>
-            <File>.*Designer\.cs$</File>
-            <File>.*\.generated\.cs$</File>
-            <File>.*ServiceReference\.cs$</File>
-            <File>.*Reference\.cs$</File>
-            <File>.*TemporaryGeneratedFile_.*\.cs$</File>
+    public Type ElementType => typeof(T);
+    public Expression Expression { get; }
+    public IQueryProvider Provider { get; }
+}
 
-            <!-- EF Core Migrations -->
-            <File>.*/Migrations/.*</File>
+// ------------------------------------------------------------
+// Reflection helpers to call private methods
+// ------------------------------------------------------------
+public static class RepoTestExtensions
+{
+    public static IQueryable<T> InvokeApplyIncludes<T>(
+        IEnumerable<string> includes,
+        IQueryable<T> query)
+    {
+        var method = typeof(GenericCrudRepository<T>)
+            .GetMethod("ApplyIncludes", BindingFlags.NonPublic | BindingFlags.Static);
 
-            <!-- gRPC generated code -->
-            <File>.*\.proto\.cs$</File>
+        return (IQueryable<T>)method.Invoke(null, new object[] { query, includes });
+    }
 
-            <!-- Razor generated code -->
-            <File>.*\.razor\.g\.cs$</File>
+    public static Task InvokeLoadReferences<TEntity>(
+        this GenericCrudRepository<TEntity> repo,
+        TEntity entity,
+        IEnumerable<Expression<Func<TEntity, object>>> refs)
+        where TEntity : class
+    {
+        var method = typeof(GenericCrudRepository<TEntity>)
+            .GetMethod("LoadReferences", BindingFlags.NonPublic | BindingFlags.Instance,
+                null,
+                new[] { typeof(TEntity), typeof(IEnumerable<Expression<Func<TEntity, object>>>) },
+                null);
 
-          </Exclude>
+        return (Task)method.Invoke(repo, new object[] { entity, refs });
+    }
 
-        </Configuration>
-      </DataCollector>
-    </DataCollectors>
-  </DataCollectionRunSettings>
-</RunSettings>
+    public static Task InvokeLoadReferences<TEntity>(
+        this GenericCrudRepository<TEntity> repo,
+        IEnumerable<TEntity> entities,
+        IEnumerable<Expression<Func<TEntity, object>>> refs)
+        where TEntity : class
+    {
+        var method = typeof(GenericCrudRepository<TEntity>)
+            .GetMethod("LoadReferences", BindingFlags.NonPublic | BindingFlags.Instance,
+                null,
+                new[] { typeof(IEnumerable<TEntity>), typeof(IEnumerable<Expression<Func<TEntity, object>>>) },
+                null);
+
+        return (Task)method.Invoke(repo, new object[] { entities, refs });
+    }
+}
+
+// ------------------------------------------------------------
+// TESTS
+// ------------------------------------------------------------
+public class GenericCrudRepositoryTests
+{
+    // --------------------------------------------------------
+    // 1. ApplyIncludes
+    // --------------------------------------------------------
+    [Fact]
+    public void ApplyIncludes_AppliesAllIncludes()
+    {
+        // Arrange
+        var data = new List<Dummy>().AsQueryable();
+
+        var provider = Substitute.For<IQueryProvider>();
+        var queryable = new TestQueryable<Dummy>(data, provider);
+
+        var includes = new[] { "Child", "Orders", "Address" };
+
+        // Act
+        var result = RepoTestExtensions.InvokeApplyIncludes(includes, queryable);
+
+        // Assert
+        provider.Received(includes.Length)
+                .CreateQuery(Arg.Is<MethodCallExpression>(expr =>
+                    expr.Method.Name == "Include"));
+    }
+
+    // --------------------------------------------------------
+    // 2. LoadReferences (single entity)
+    // --------------------------------------------------------
+    [Fact]
+    public async Task LoadReferences_LoadsEachReference()
+    {
+        // Arrange
+        var entity = new Dummy();
+
+        var mockContext = Substitute.For<DbContext>();
+        var mockEntry = Substitute.For<EntityEntry<Dummy>>();
+        var mockRef = Substitute.For<ReferenceEntry<Dummy, object>>();
+
+        mockContext.Entry(entity).Returns(mockEntry);
+        mockEntry.Reference(Arg.Any<Expression<Func<Dummy, object>>>())
+                 .Returns(mockRef);
+
+        var repo = new GenericCrudRepository<Dummy>(mockContext);
+
+        Expression<Func<Dummy, object>> r1 = x => x.Child;
+        Expression<Func<Dummy, object>> r2 = x => x.Other;
+
+        // Act
+        await repo.InvokeLoadReferences(entity, new[] { r1, r2 });
+
+        // Assert
+        await mockRef.Received(2).LoadAsync();
+    }
+
+    // --------------------------------------------------------
+    // 3. LoadReferences (multiple entities)
+    // --------------------------------------------------------
+    [Fact]
+    public async Task LoadReferences_ForMultipleEntities_LoadsReferencesForEach()
+    {
+        // Arrange
+        var e1 = new Dummy();
+        var e2 = new Dummy();
+
+        var mockContext = Substitute.For<DbContext>();
+        var mockEntry = Substitute.For<EntityEntry<Dummy>>();
+        var mockRef = Substitute.For<ReferenceEntry<Dummy, object>>();
+
+        mockContext.Entry(Arg.Any<Dummy>()).Returns(mockEntry);
+        mockEntry.Reference(Arg.Any<Expression<Func<Dummy, object>>>())
+                 .Returns(mockRef);
+
+        var repo = new GenericCrudRepository<Dummy>(mockContext);
+
+        Expression<Func<Dummy, object>> r1 = x => x.Child;
+
+        // Act
+        await repo.InvokeLoadReferences(new[] { e1, e2 }, new[] { r1 });
+
+        // Assert
+        await mockRef.Received(2).LoadAsync(); // once per entity
+    }
+}
