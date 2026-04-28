@@ -1,177 +1,85 @@
-Absolutely, Bruce — let’s build **clean, modern, real‑world unit tests for ASP.NET Core controllers**. I’ll give you a **template you can drop straight into your project**, and you can adapt it to any controller you have.
+Right — and this is the key thing, Bruce:
 
-I’ll show you:
+### **Visual Studio 2026’s built‑in coverage UI (the one that replaced the old VS Enterprise coverage engine) only exposes:**
+- **Assembly‑level exclusions**
+- **Attribute‑based exclusions**
 
-- A realistic controller example  
-- A full unit test using **xUnit + Moq**  
-- How to test:  
-  - return types  
-  - status codes  
-  - model validation  
-  - service calls  
-  - error paths  
+It **does NOT** expose:
+- File‑level exclusions  
+- Class‑level exclusions  
+- Pattern‑based exclusions  
+- “Ignore Program.cs” style rules  
 
-No fluff — just the patterns you actually need.
+That’s why you’re not seeing an option for `Program.cs` specifically.
 
----
+And here’s the twist:
 
-# 🎯 1. Example Controller (for context)
+### **dotCover *does* support file‑level and class‑level exclusions — but ONLY through a dotCover configuration file.**
 
-Let’s assume you have a controller like this:
+The Visual Studio UI simply doesn’t surface those options.
 
-```csharp
-[ApiController]
-[Route("api/[controller]")]
-public class WeatherController : ControllerBase
-{
-    private readonly IWeatherService _service;
-
-    public WeatherController(IWeatherService service)
-    {
-        _service = service;
-    }
-
-    [HttpGet("{city}")]
-    public async Task<IActionResult> GetWeather(string city)
-    {
-        if (string.IsNullOrWhiteSpace(city))
-            return BadRequest("City is required");
-
-        var result = await _service.GetWeatherAsync(city);
-
-        if (result == null)
-            return NotFound();
-
-        return Ok(result);
-    }
-}
-```
+So the fix is:
 
 ---
 
-# ⭐ 2. Unit Test Setup (xUnit + Moq)
-
-Install packages if you haven’t:
+# ✅ The correct way to exclude Program.cs in dotCover (VS2026)
+Create a `dotCover.xml` file in your solution root:
 
 ```
-dotnet add package xunit
-dotnet add package xunit.runner.visualstudio
-dotnet add package Moq
+<DotCoverSettings>
+  <Filters>
+    <ExcludeFilters>
+      <FilterEntry>
+        <ModuleMask>*</ModuleMask>
+        <FileMask>*Program.cs</FileMask>
+      </FilterEntry>
+    </ExcludeFilters>
+  </Filters>
+</DotCoverSettings>
 ```
 
----
+This excludes **any file named Program.cs**, regardless of project.
 
-# 🧪 3. Unit Test Class
+If you want to exclude only the top‑level Program class:
 
-```csharp
-using Xunit;
-using Moq;
-using Microsoft.AspNetCore.Mvc;
-
-public class WeatherControllerTests
-{
-    private readonly Mock<IWeatherService> _serviceMock;
-    private readonly WeatherController _controller;
-
-    public WeatherControllerTests()
-    {
-        _serviceMock = new Mock<IWeatherService>();
-        _controller = new WeatherController(_serviceMock.Object);
-    }
-
-    [Fact]
-    public async Task GetWeather_ReturnsBadRequest_WhenCityIsEmpty()
-    {
-        // Act
-        var result = await _controller.GetWeather("");
-
-        // Assert
-        var badRequest = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Equal("City is required", badRequest.Value);
-    }
-
-    [Fact]
-    public async Task GetWeather_ReturnsNotFound_WhenServiceReturnsNull()
-    {
-        // Arrange
-        _serviceMock
-            .Setup(s => s.GetWeatherAsync("London"))
-            .ReturnsAsync((WeatherResult)null);
-
-        // Act
-        var result = await _controller.GetWeather("London");
-
-        // Assert
-        Assert.IsType<NotFoundResult>(result);
-    }
-
-    [Fact]
-    public async Task GetWeather_ReturnsOk_WithWeatherData()
-    {
-        // Arrange
-        var expected = new WeatherResult { Temperature = 20 };
-        
-        _serviceMock
-            .Setup(s => s.GetWeatherAsync("London"))
-            .ReturnsAsync(expected);
-
-        // Act
-        var result = await _controller.GetWeather("London");
-
-        // Assert
-        var ok = Assert.IsType<OkObjectResult>(result);
-        Assert.Equal(expected, ok.Value);
-    }
-
-    [Fact]
-    public async Task GetWeather_CallsServiceExactlyOnce()
-    {
-        // Arrange
-        _serviceMock
-            .Setup(s => s.GetWeatherAsync("London"))
-            .ReturnsAsync(new WeatherResult());
-
-        // Act
-        await _controller.GetWeather("London");
-
-        // Assert
-        _serviceMock.Verify(s => s.GetWeatherAsync("London"), Times.Once);
-    }
-}
+```
+<ClassMask>Program</ClassMask>
 ```
 
----
-
-# 🔍 4. What This Gives You
-
-You now have tests that verify:
-
-### ✔ Input validation  
-BadRequest when city is empty.
-
-### ✔ Service interaction  
-Ensures the controller calls the service exactly once.
-
-### ✔ NotFound path  
-When the service returns null.
-
-### ✔ Success path  
-Returns Ok(result) with the correct payload.
-
-### ✔ No need for test server  
-These are **true unit tests**, not integration tests.
+Both work — the first is more reliable for .NET 6+ minimal hosting.
 
 ---
 
-# 🧠 Want me to generate tests for *your actual controllers*?
+# ⭐ How to make Visual Studio 2026 actually use this file
+VS2026 auto‑detects dotCover configs the same way it auto‑detects runsettings:
 
-If you paste one of your controllers here, I’ll generate:
+1. Put `dotCover.xml` next to your `.sln`
+2. Restart Visual Studio
+3. Run coverage again
 
-- A full test class  
-- With mocks  
-- With all branches covered  
-- Matching your naming conventions  
-- Matching your return types  
-- Matching your services  
+If you already selected a different coverage config manually, VS will keep using that until you reset it.
 
-Just drop in the controller and I’ll take it from there.
+---
+
+# 🎯 Why the UI doesn’t show file‑level exclusions
+Because the VS2026 coverage UI is built around:
+- Assembly filters  
+- Attribute filters  
+
+dotCover’s full filtering engine is **only accessible via XML**, not the UI.
+
+JetBrains never exposed file‑level filtering in the Visual Studio integration panel.
+
+---
+
+# If you want, Bruce…
+I can generate a **full dotCover.xml** that excludes:
+
+- `Program.cs`
+- Test projects
+- Reqnroll `*.feature.cs`
+- Auto‑generated files
+- EF migrations
+- Razor generated files
+
+Just say the word and I’ll assemble the whole thing for you.
