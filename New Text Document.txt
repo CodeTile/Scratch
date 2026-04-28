@@ -7,16 +7,17 @@ using System.Reflection;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
-using NSubstitute;
+using Moq;
 using Xunit;
 
 // ------------------------------------------------------------
-// Dummy entity for testing
+// Entity under test
 // ------------------------------------------------------------
-public class Dummy
+public class Foobar
 {
-    public Dummy Child { get; set; }
-    public Dummy Other { get; set; }
+    public int Id { get; set; }
+    public string? Foo { get; set; }
+    public int Bar { get; set; }
 }
 
 // ------------------------------------------------------------
@@ -88,7 +89,7 @@ public static class RepoTestExtensions
 }
 
 // ------------------------------------------------------------
-// TESTS
+// TESTS (Moq version)
 // ------------------------------------------------------------
 public class GenericCrudRepositoryTests
 {
@@ -99,20 +100,21 @@ public class GenericCrudRepositoryTests
     public void ApplyIncludes_AppliesAllIncludes()
     {
         // Arrange
-        var data = new List<Dummy>().AsQueryable();
+        var data = new List<Foobar>().AsQueryable();
 
-        var provider = Substitute.For<IQueryProvider>();
-        var queryable = new TestQueryable<Dummy>(data, provider);
+        var provider = new Mock<IQueryProvider>();
+        var queryable = new TestQueryable<Foobar>(data, provider.Object);
 
-        var includes = new[] { "Child", "Orders", "Address" };
+        var includes = new[] { "Foo", "Bar", "SomethingElse" };
 
         // Act
         var result = RepoTestExtensions.InvokeApplyIncludes(includes, queryable);
 
         // Assert
-        provider.Received(includes.Length)
-                .CreateQuery(Arg.Is<MethodCallExpression>(expr =>
-                    expr.Method.Name == "Include"));
+        provider.Verify(p =>
+            p.CreateQuery(It.Is<MethodCallExpression>(expr =>
+                expr.Method.Name == "Include")),
+            Times.Exactly(includes.Length));
     }
 
     // --------------------------------------------------------
@@ -122,26 +124,26 @@ public class GenericCrudRepositoryTests
     public async Task LoadReferences_LoadsEachReference()
     {
         // Arrange
-        var entity = new Dummy();
+        var entity = new Foobar();
 
-        var mockContext = Substitute.For<DbContext>();
-        var mockEntry = Substitute.For<EntityEntry<Dummy>>();
-        var mockRef = Substitute.For<ReferenceEntry<Dummy, object>>();
+        var mockContext = new Mock<DbContext>();
+        var mockEntry = new Mock<EntityEntry<Foobar>>();
+        var mockRef = new Mock<ReferenceEntry<Foobar, object>>();
 
-        mockContext.Entry(entity).Returns(mockEntry);
-        mockEntry.Reference(Arg.Any<Expression<Func<Dummy, object>>>())
-                 .Returns(mockRef);
+        mockContext.Setup(c => c.Entry(entity)).Returns(mockEntry.Object);
+        mockEntry.Setup(e => e.Reference(It.IsAny<Expression<Func<Foobar, object>>>()))
+                 .Returns(mockRef.Object);
 
-        var repo = new GenericCrudRepository<Dummy>(mockContext);
+        var repo = new GenericCrudRepository<Foobar>(mockContext.Object);
 
-        Expression<Func<Dummy, object>> r1 = x => x.Child;
-        Expression<Func<Dummy, object>> r2 = x => x.Other;
+        Expression<Func<Foobar, object>> r1 = x => x.Foo!;
+        Expression<Func<Foobar, object>> r2 = x => x.Bar;
 
         // Act
         await repo.InvokeLoadReferences(entity, new[] { r1, r2 });
 
         // Assert
-        await mockRef.Received(2).LoadAsync();
+        mockRef.Verify(r => r.LoadAsync(default), Times.Exactly(2));
     }
 
     // --------------------------------------------------------
@@ -151,25 +153,25 @@ public class GenericCrudRepositoryTests
     public async Task LoadReferences_ForMultipleEntities_LoadsReferencesForEach()
     {
         // Arrange
-        var e1 = new Dummy();
-        var e2 = new Dummy();
+        var e1 = new Foobar();
+        var e2 = new Foobar();
 
-        var mockContext = Substitute.For<DbContext>();
-        var mockEntry = Substitute.For<EntityEntry<Dummy>>();
-        var mockRef = Substitute.For<ReferenceEntry<Dummy, object>>();
+        var mockContext = new Mock<DbContext>();
+        var mockEntry = new Mock<EntityEntry<Foobar>>();
+        var mockRef = new Mock<ReferenceEntry<Foobar, object>>();
 
-        mockContext.Entry(Arg.Any<Dummy>()).Returns(mockEntry);
-        mockEntry.Reference(Arg.Any<Expression<Func<Dummy, object>>>())
-                 .Returns(mockRef);
+        mockContext.Setup(c => c.Entry(It.IsAny<Foobar>())).Returns(mockEntry.Object);
+        mockEntry.Setup(e => e.Reference(It.IsAny<Expression<Func<Foobar, object>>>()))
+                 .Returns(mockRef.Object);
 
-        var repo = new GenericCrudRepository<Dummy>(mockContext);
+        var repo = new GenericCrudRepository<Foobar>(mockContext.Object);
 
-        Expression<Func<Dummy, object>> r1 = x => x.Child;
+        Expression<Func<Foobar, object>> r1 = x => x.Foo!;
 
         // Act
         await repo.InvokeLoadReferences(new[] { e1, e2 }, new[] { r1 });
 
         // Assert
-        await mockRef.Received(2).LoadAsync(); // once per entity
+        mockRef.Verify(r => r.LoadAsync(default), Times.Exactly(2));
     }
 }
