@@ -1,540 +1,139 @@
-- GET  
-- POST  
-- PUT  
-- PATCH  
-- DELETE  
-- Lightweight retry logic  
-- Timeout handling  
-- Cancellation support  
-- JSON serialization/deserialization  
-- Still using **IHttpClientFactory**  
-- Clean, modern .NET 10 style  
-
-And below it, the **complete merged test class** covering every verb and every behaviour.
-
-Everything is self‑contained and ready to drop into your solution.
-
----
-
-# ✅ **Regenerated MyClass (Full CRUD + Retry + Timeout)**
-
-```csharp
-using System.Net.Http.Json;
-
-public class MyClass(IHttpClientFactory httpClientFactory) : IMyClass
+[Fact]
+public async Task PatchAsync_Generic_RetriesAndSucceeds()
 {
-    private readonly HttpClient _httpClient = httpClientFactory.CreateClient("Hello");
-
-    // ---------------- PUBLIC API ----------------
-
-    public Task<string?> GetFooAsync(CancellationToken cancellationToken = default)
-        => GetResultAsString("Foo", cancellationToken);
-
-    public Task<string?> GetBarAsync(CancellationToken cancellationToken = default)
-        => GetResultAsync<string>("Bar", cancellationToken);
-
-    public Task<string?> PostFooAsync(object payload, CancellationToken cancellationToken = default)
-        => PostResultAsString("Foo", payload, cancellationToken);
-
-    public Task<TResponse?> PostBarAsync<TRequest, TResponse>(TRequest payload, CancellationToken cancellationToken = default)
-        => PostResultAsync<TRequest, TResponse>("Bar", payload, cancellationToken);
-
-    public Task<string?> PutAsync(string url, object payload, CancellationToken cancellationToken = default)
-        => PutResultAsString(url, payload, cancellationToken);
-
-    public Task<TResponse?> PutAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken = default)
-        => PutResultAsync<TRequest, TResponse>(url, payload, cancellationToken);
-
-    public Task<string?> PatchAsync(string url, object payload, CancellationToken cancellationToken = default)
-        => PatchResultAsString(url, payload, cancellationToken);
-
-    public Task<TResponse?> PatchAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken = default)
-        => PatchResultAsync<TRequest, TResponse>(url, payload, cancellationToken);
-
-    public Task<bool> DeleteAsync(string url, CancellationToken cancellationToken = default)
-        => DeleteResult(url, cancellationToken);
-
-    // ---------------- GET ----------------
-
-    private Task<string?> GetResultAsString(string url, CancellationToken cancellationToken)
-        => RetryAsync(
-            async ct =>
-            {
-                var response = await _httpClient.GetAsync(url, ct);
-                if (!response.IsSuccessStatusCode)
-                    return null;
-
-                return await response.Content.ReadAsStringAsync(ct);
-            },
-            cancellationToken);
-
-    private Task<T?> GetResultAsync<T>(string url, CancellationToken cancellationToken)
-        => RetryAsync(
-            async ct =>
-            {
-                var response = await _httpClient.GetAsync(url, ct);
-                if (!response.IsSuccessStatusCode)
-                    return default;
-
-                return await response.Content.ReadFromJsonAsync<T>(cancellationToken: ct);
-            },
-            cancellationToken);
-
-    // ---------------- POST ----------------
-
-    private Task<string?> PostResultAsString(string url, object payload, CancellationToken cancellationToken)
-        => RetryAsync(
-            async ct =>
-            {
-                var response = await _httpClient.PostAsJsonAsync(url, payload, ct);
-                if (!response.IsSuccessStatusCode)
-                    return null;
-
-                return await response.Content.ReadAsStringAsync(ct);
-            },
-            cancellationToken);
-
-    private Task<TResponse?> PostResultAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken)
-        => RetryAsync(
-            async ct =>
-            {
-                var response = await _httpClient.PostAsJsonAsync(url, payload, ct);
-                if (!response.IsSuccessStatusCode)
-                    return default;
-
-                return await response.Content.ReadFromJsonAsync<TResponse>(cancellationToken: ct);
-            },
-            cancellationToken);
-
-    // ---------------- PUT ----------------
-
-    private Task<string?> PutResultAsString(string url, object payload, CancellationToken cancellationToken)
-        => RetryAsync(
-            async ct =>
-            {
-                var response = await _httpClient.PutAsJsonAsync(url, payload, ct);
-                if (!response.IsSuccessStatusCode)
-                    return null;
-
-                return await response.Content.ReadAsStringAsync(ct);
-            },
-            cancellationToken);
-
-    private Task<TResponse?> PutResultAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken)
-        => RetryAsync(
-            async ct =>
-            {
-                var response = await _httpClient.PutAsJsonAsync(url, payload, ct);
-                if (!response.IsSuccessStatusCode)
-                    return default;
-
-                return await response.Content.ReadFromJsonAsync<TResponse>(cancellationToken: ct);
-            },
-            cancellationToken);
-
-    // ---------------- PATCH ----------------
-
-    private Task<string?> PatchResultAsString(string url, object payload, CancellationToken cancellationToken)
-        => RetryAsync(
-            async ct =>
-            {
-                var request = new HttpRequestMessage(HttpMethod.Patch, url)
-                {
-                    Content = JsonContent.Create(payload)
-                };
-
-                var response = await _httpClient.SendAsync(request, ct);
-                if (!response.IsSuccessStatusCode)
-                    return null;
-
-                return await response.Content.ReadAsStringAsync(ct);
-            },
-            cancellationToken);
-
-    private Task<TResponse?> PatchResultAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken)
-        => RetryAsync(
-            async ct =>
-            {
-                var request = new HttpRequestMessage(HttpMethod.Patch, url)
-                {
-                    Content = JsonContent.Create(payload)
-                };
-
-                var response = await _httpClient.SendAsync(request, ct);
-                if (!response.IsSuccessStatusCode)
-                    return default;
-
-                return await response.Content.ReadFromJsonAsync<TResponse>(cancellationToken: ct);
-            },
-            cancellationToken);
-
-    // ---------------- DELETE ----------------
-
-    private Task<bool> DeleteResult(string url, CancellationToken cancellationToken)
-        => RetryAsync(
-            async ct =>
-            {
-                var response = await _httpClient.DeleteAsync(url, ct);
-                return response.IsSuccessStatusCode;
-            },
-            cancellationToken);
-
-    // ---------------- RETRY ----------------
-
-    private static async Task<T?> RetryAsync<T>(
-        Func<CancellationToken, Task<T?>> action,
-        CancellationToken cancellationToken,
-        int retries = 2,
-        int delayMs = 100)
+    // Arrange
+    var client = CreateClient(call =>
     {
-        for (int attempt = 0; attempt < retries; attempt++)
+        if (call < 3)
         {
-            try
-            {
-                return await action(cancellationToken);
-            }
-            catch (HttpRequestException) when (attempt < retries - 1)
-            {
-                await Task.Delay(delayMs, cancellationToken);
-            }
-            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < retries - 1)
-            {
-                await Task.Delay(delayMs, cancellationToken);
-            }
+            throw new HttpRequestException();
         }
 
-        return await action(cancellationToken);
-    }
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(new { Message = "Patched" })
+        };
+    });
+
+    var sut = CreateSut(client);
+
+    // Act
+    var result = await sut.PatchAsync<object, dynamic>("Foo", new { Name = "OnTheNingNangNong" });
+
+    // Assert
+    result.ShouldNotBeNull();
+    result.Message.ShouldBe("Patched");
 }
-```
 
----
-
-# 🧪 **Regenerated Full Merged Test Class (GET + POST + PUT + PATCH + DELETE)**
-
-This is the complete suite — all verbs, all behaviours, all retry logic, all timeout logic.
-
-```csharp
-using System.Net;
-using System.Net.Http;
-using System.Threading;
-using System.Threading.Tasks;
-using Moq;
-using Moq.Protected;
-using Xunit;
-using System.Net.Http.Json;
-
-public class MyClassTests
+[Fact]
+public async Task PatchAsync_Generic_DoesNotRetryOnBadRequest()
 {
-    private HttpClient CreateClient(
-        Func<int, HttpResponseMessage> responseFactory,
-        Action<HttpRequestMessage, CancellationToken>? callback = null)
+    // Arrange
+    int callCount = 0;
+
+    var client = CreateClient(call =>
     {
-        int callCount = 0;
+        callCount++;
 
-        var handlerMock = new Mock<HttpMessageHandler>();
-
-        handlerMock
-            .Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.IsAny<HttpRequestMessage>(),
-                ItExpr.IsAny<CancellationToken>()
-            )
-            .ReturnsAsync((HttpRequestMessage req, CancellationToken ct) =>
-            {
-                callCount++;
-                callback?.Invoke(req, ct);
-                return responseFactory(callCount);
-            });
-
-        return new HttpClient(handlerMock.Object);
-    }
-
-    private MyClass CreateSut(HttpClient client)
-    {
-        var factory = new Mock<IHttpClientFactory>();
-        factory.Setup(f => f.CreateClient("Hello")).Returns(client);
-        return new MyClass(factory.Object);
-    }
-
-    // ---------------- GET ----------------
-
-    [Fact]
-    public async Task GetFooAsync_RetriesAndSucceeds()
-    {
-        var client = CreateClient(call =>
+        if (callCount == 1)
         {
-            if (call < 3)
-                throw new HttpRequestException();
-
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("Success")
-            };
-        });
-
-        var sut = CreateSut(client);
-
-        var result = await sut.GetFooAsync();
-
-        Assert.Equal("Success", result);
-    }
-
-    [Fact]
-    public async Task GetFooAsync_RetriesOnTimeout()
-    {
-        var client = CreateClient(call =>
-        {
-            if (call < 3)
-                throw new TaskCanceledException("Timeout");
-
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("OK")
-            };
-        });
-
-        var sut = CreateSut(client);
-
-        var result = await sut.GetFooAsync();
-
-        Assert.Equal("OK", result);
-    }
-
-    [Fact]
-    public async Task GetFooAsync_DoesNotRetryOnBadRequest()
-    {
-        int count = 0;
-
-        var client = CreateClient(call =>
-        {
-            count++;
             return new HttpResponseMessage(HttpStatusCode.BadRequest);
-        });
+        }
 
-        var sut = CreateSut(client);
+        return new HttpResponseMessage(HttpStatusCode.OK);
+    });
 
-        var result = await sut.GetFooAsync();
+    var sut = CreateSut(client);
 
-        Assert.Null(result);
-        Assert.Equal(1, count);
-    }
+    // Act
+    var result = await sut.PatchAsync<object, dynamic>("Foo", new { Name = "OnTheNingNangNong" });
 
-    [Fact]
-    public async Task GetFooAsync_CallsCorrectUrl()
-    {
-        HttpRequestMessage? captured = null;
-
-        var client = CreateClient(
-            _ => new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("OK")
-            },
-            (req, _) => captured = req
-        );
-
-        var sut = CreateSut(client);
-
-        await sut.GetFooAsync();
-
-        Assert.NotNull(captured);
-        Assert.Equal("Foo", captured!.RequestUri!.ToString());
-    }
-
-    // ---------------- POST ----------------
-
-    [Fact]
-    public async Task PostFooAsync_RetriesAndSucceeds()
-    {
-        var client = CreateClient(call =>
-        {
-            if (call < 3)
-                throw new HttpRequestException();
-
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("Posted")
-            };
-        });
-
-        var sut = CreateSut(client);
-
-        var result = await sut.PostFooAsync(new { Name = "PingPong" });
-
-        Assert.Equal("Posted", result);
-    }
-
-    [Fact]
-    public async Task PostFooAsync_CallsCorrectUrl()
-    {
-        HttpRequestMessage? captured = null;
-
-        var client = CreateClient(
-            _ => new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("OK")
-            },
-            (req, _) => captured = req
-        );
-
-        var sut = CreateSut(client);
-
-        await sut.PostFooAsync(new { Name = "PingPong" });
-
-        Assert.NotNull(captured);
-        Assert.Equal("Foo", captured!.RequestUri!.ToString());
-        Assert.Equal(HttpMethod.Post, captured.Method);
-    }
-
-    // ---------------- PUT ----------------
-
-    [Fact]
-    public async Task PutAsync_RetriesAndSucceeds()
-    {
-        var client = CreateClient(call =>
-        {
-            if (call < 3)
-                throw new HttpRequestException();
-
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("Updated")
-            };
-        });
-
-        var sut = CreateSut(client);
-
-        var result = await sut.PutAsync("Foo", new { Name = "PingPong" });
-
-        Assert.Equal("Updated", result);
-    }
-
-    [Fact]
-    public async Task PutAsync_CallsCorrectUrl()
-    {
-        HttpRequestMessage? captured = null;
-
-        var client = CreateClient(
-            _ => new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("OK")
-            },
-            (req, _) => captured = req
-        );
-
-        var sut = CreateSut(client);
-
-        await sut.PutAsync("Foo", new { Name = "PingPong" });
-
-        Assert.NotNull(captured);
-        Assert.Equal("Foo", captured!.RequestUri!.ToString());
-        Assert.Equal(HttpMethod.Put, captured.Method);
-    }
-
-    // ---------------- PATCH ----------------
-
-    [Fact]
-    public async Task PatchAsync_RetriesAndSucceeds()
-    {
-        var client = CreateClient(call =>
-        {
-            if (call < 3)
-                throw new HttpRequestException();
-
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("Patched")
-            };
-        });
-
-        var sut = CreateSut(client);
-
-        var result = await sut.PatchAsync("Foo", new { Name = "PingPong" });
-
-        Assert.Equal("Patched", result);
-    }
-
-    [Fact]
-    public async Task PatchAsync_CallsCorrectUrl()
-    {
-        HttpRequestMessage? captured = null;
-
-        var client = CreateClient(
-            _ => new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("OK")
-            },
-            (req, _) => captured = req
-        );
-
-        var sut = CreateSut(client);
-
-        await sut.PatchAsync("Foo", new { Name = "PingPong" });
-
-        Assert.NotNull(captured);
-        Assert.Equal("Foo", captured!.RequestUri!.ToString());
-        Assert.Equal(HttpMethod.Patch, captured.Method);
-    }
-
-    // ---------------- DELETE ----------------
-
-    [Fact]
-    public async Task DeleteAsync_RetriesAndSucceeds()
-    {
-        var client = CreateClient(call =>
-        {
-            if (call < 3)
-                throw new HttpRequestException();
-
-            return new HttpResponseMessage(HttpStatusCode.OK);
-        });
-
-        var sut = CreateSut(client);
-
-        var result = await sut.DeleteAsync("Foo");
-
-        Assert.True(result);
-    }
-
-    [Fact]
-    public async Task DeleteAsync_CallsCorrectUrl()
-    {
-        HttpRequestMessage? captured = null;
-
-        var client = CreateClient(
-            _ => new HttpResponseMessage(HttpStatusCode.OK),
-            (req, _) => captured = req
-        );
-
-        var sut = CreateSut(client);
-
-        await sut.DeleteAsync("Foo");
-
-        Assert.NotNull(captured);
-        Assert.Equal("Foo", captured!.RequestUri!.ToString());
-        Assert.Equal(HttpMethod.Delete, captured.Method);
-    }
+    // Assert
+    result.ShouldBeNull();
+    callCount.ShouldBe(1);
 }
-```
 
----
+[Fact]
+public async Task PatchAsync_Generic_CallsCorrectUrlAndMethod()
+{
+    // Arrange
+    HttpRequestMessage? captured = null;
 
-# 🎉 All done  
-You now have:
+    var client = CreateClient(
+        _ =>
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new { Message = "OK" })
+            };
+        },
+        (req, _) =>
+        {
+            captured = req;
+        }
+    );
 
-- A **complete, production‑ready API client**  
-- Full CRUD support  
-- Lightweight retry + timeout handling  
-- Cancellation support  
-- Clean, modern .NET 10 code  
-- A **single merged test class** covering every behaviour  
+    var sut = CreateSut(client);
 
-If you want, I can also generate:
+    // Act
+    await sut.PatchAsync<object, dynamic>("Foo", new { Name = "OnTheNingNangNong" });
 
-- An interface (`IMyClass`)  
-- A typed DI registration snippet  
-- XML documentation comments  
-- Logging hooks for retries  
+    // Assert
+    captured.ShouldNotBeNull();
+    captured!.RequestUri!.ToString().ShouldBe("Foo");
+    captured.Method.Method.ShouldBe("PATCH");
+}
 
-Just tell me what you want next.
+[Fact]
+public async Task PatchAsync_Generic_SendsPayloadCorrectly()
+{
+    // Arrange
+    HttpRequestMessage? captured = null;
+
+    var client = CreateClient(
+        _ =>
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new { Message = "OK" })
+            };
+        },
+        (req, _) =>
+        {
+            captured = req;
+        }
+    );
+
+    var sut = CreateSut(client);
+
+    var payload = new { Name = "OnTheNingNangNong" };
+
+    // Act
+    await sut.PatchAsync<object, dynamic>("Foo", payload);
+
+    // Assert
+    captured.ShouldNotBeNull();
+
+    var sentJson = await captured!.Content!.ReadAsStringAsync();
+    sentJson.ShouldContain("OnTheNingNangNong");
+}
+
+[Fact]
+public async Task PatchAsync_Generic_RespectsCancellationToken()
+{
+    // Arrange
+    using var cts = new CancellationTokenSource();
+    cts.Cancel();
+
+    var client = CreateClient(_ =>
+    {
+        return new HttpResponseMessage(HttpStatusCode.OK);
+    });
+
+    var sut = CreateSut(client);
+
+    // Act & Assert
+    await Should.ThrowAsync<TaskCanceledException>(async () =>
+        await sut.PatchAsync<object, dynamic>("Foo", new { Name = "OnTheNingNangNong" }, cts.Token)
+    );
+}
