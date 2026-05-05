@@ -1,322 +1,59 @@
-Perfect—that actually simplifies and strengthens the model.
+You’re at the right point to **formalize this into a reusable security package** that both your **Blazor Server app and API** can consume with a single line like:
 
-You’re now going **pure group-based authorization**:
+```csharp
+builder.Services.AddAppSecurity(builder.Configuration);
+```
 
-> ✔ AD + optional login
-> ✔ Groups ONLY (no roles at all)
-> ✔ Nested group resolution
-> ✔ Cached AD calls
-> ✔ 7-minute timeout for non-AD users
-> ✔ Unified user context
-> ✔ Separate security project (no ASP.NET deps)
+The key is:
 
-Below is a **clean, full implementation from scratch**.
+> ✔ Keep your **Security core pure**
+> ✔ Add a thin **ASP.NET integration layer** (extension method + handlers)
+> ✔ Make it plug-and-play for both Blazor + API
 
 ---
 
-# 🧠 FINAL MODEL
+# 🧠 FINAL STRUCTURE
 
 ```text
-User → Direct Groups → Nested Expansion → Flat Group List → UI/API
-```
-
-No roles anywhere.
-
----
-
-# 📦 1. SECURITY PROJECT (PURE)
-
-## YourApp.Security.csproj
-
-```xml
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
-  </ItemGroup>
-</Project>
+YourApp.Security
+   ├── Core (pure .NET)
+   │     ├── UserContext
+   │     ├── GroupResolver
+   │     ├── UserContextBuilder
+   │
+   ├── AspNet (integration layer)
+   │     ├── Extensions (AddAppSecurity)
+   │     ├── Authorization handlers
+   │     ├── Snapshot mapper
 ```
 
 ---
 
-# 🧱 2. USER CONTEXT (GROUP ONLY)
+# 📦 PACKAGES (Security project)
 
-```csharp
-namespace YourApp.Security;
-
-public class UserContext
-{
-    public string? UserName { get; set; }
-    public bool IsAdUser { get; set; }
-
-    public List<string> Groups { get; set; } = new();
-}
-```
-
----
-
-# 🧠 3. SNAPSHOT INPUT (FROM HOST)
-
-```csharp
-namespace YourApp.Security;
-
-public class ExternalUserSnapshot
-{
-    public string? UserName { get; set; }
-    public bool IsAdUser { get; set; }
-
-    public List<string> DirectGroups { get; set; } = new();
-}
-```
-
----
-
-# ⚡ 4. AD CACHE (7 min sliding, 10 min absolute)
-
-```csharp
-using Microsoft.Extensions.Caching.Memory;
-
-namespace YourApp.Security;
-
-public interface IAdCache
-{
-    T? GetOrCreate<T>(string key, Func<T> factory);
-}
-
-public class AdCache : IAdCache
-{
-    private readonly IMemoryCache _cache;
-
-    public AdCache(IMemoryCache cache)
-    {
-        _cache = cache;
-    }
-
-    public T? GetOrCreate<T>(string key, Func<T> factory)
-    {
-        return _cache.GetOrCreate(key, entry =>
-        {
-            entry.SlidingExpiration = TimeSpan.FromMinutes(7);
-            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10);
-
-            return factory();
-        });
-    }
-}
-```
-
----
-
-# 🧠 5. GROUP RESOLVER (NESTED SUPPORT)
-
-```csharp
-namespace YourApp.Security;
-
-public interface IGroupResolver
-{
-    List<string> Expand(List<string> directGroups);
-}
-
-public class GroupResolver : IGroupResolver
-{
-    private readonly IDictionary<string, List<string>> _map;
-
-    public GroupResolver(IDictionary<string, List<string>> map)
-    {
-        _map = map;
-    }
-
-    public List<string> Expand(List<string> directGroups)
-    {
-        var result = new HashSet<string>();
-        var visited = new HashSet<string>();
-
-        foreach (var g in directGroups)
-            Resolve(g, result, visited);
-
-        return result.ToList();
-    }
-
-    private void Resolve(string g, HashSet<string> result, HashSet<string> visited)
-    {
-        if (!visited.Add(g)) return;
-
-        result.Add(g);
-
-        if (_map.TryGetValue(g, out var children))
-        {
-            foreach (var c in children)
-                Resolve(c, result, visited);
-        }
-    }
-}
-```
-
----
-
-# 🧠 6. USER CONTEXT BUILDER (NO ROLES)
-
-```csharp
-namespace YourApp.Security;
-
-public class UserContextBuilder
-{
-    private readonly IGroupResolver _resolver;
-
-    public UserContextBuilder(IGroupResolver resolver)
-    {
-        _resolver = resolver;
-    }
-
-    public UserContext Build(ExternalUserSnapshot input)
-    {
-        var allGroups = _resolver.Expand(input.DirectGroups);
-
-        return new UserContext
-        {
-            UserName = input.UserName,
-            IsAdUser = input.IsAdUser,
-            Groups = allGroups
-        };
-    }
-}
-```
-
----
-
-# 🌐 7. HOST PROJECT (Blazor + API)
-
-## 📦 Packages
+Add these (now you *do* include ASP.NET—but only in the integration layer):
 
 ```xml
 <ItemGroup>
+
   <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.0.0" />
   <PackageReference Include="Microsoft.AspNetCore.Authentication.Cookies" Version="10.0.0" />
+  <PackageReference Include="Microsoft.AspNetCore.Authorization" Version="10.0.0" />
+
+  <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.0" />
+  <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+
 </ItemGroup>
 ```
 
 ---
 
-# 🔐 AUTH SETUP (NO IDENTITY)
-
-```csharp
-builder.Services.AddAuthentication("Hybrid")
-    .AddPolicyScheme("Hybrid", "Hybrid", options =>
-    {
-        options.ForwardDefaultSelector = context =>
-        {
-            if (context.User?.Identity?.AuthenticationType == "Negotiate")
-                return "Negotiate";
-
-            return "AppCookie";
-        };
-    })
-    .AddNegotiate()
-    .AddCookie("AppCookie", options =>
-    {
-        options.LoginPath = "/login";
-
-        // 7 min timeout (non-AD users only)
-        options.ExpireTimeSpan = TimeSpan.FromMinutes(7);
-        options.SlidingExpiration = true;
-    });
-
-builder.Services.AddAuthorization();
-```
-
----
-
-# 🧠 GROUP CONFIG (CODE-BASED + NESTED)
-
-```csharp
-var groupMap = new Dictionary<string, List<string>>
-{
-    ["IT"] = new() { "Developers" },
-    ["Developers"] = new() { "Backend" },
-    ["Finance"] = new()
-};
-
-builder.Services.AddSingleton<IGroupResolver>(new GroupResolver(groupMap));
-builder.Services.AddScoped<UserContextBuilder>();
-```
-
----
-
-# 🔐 SIMPLE USER STORE (NON-AD USERS)
-
-```csharp
-public class AppUser
-{
-    public string UserName { get; set; } = "";
-    public string Password { get; set; } = "";
-    public List<string> Groups { get; set; } = new();
-}
-
-public class UserStore
-{
-    private readonly List<AppUser> _users =
-    [
-        new AppUser
-        {
-            UserName = "test",
-            Password = "password",
-            Groups = ["Finance"]
-        }
-    ];
-
-    public AppUser? Validate(string username, string password)
-    {
-        return _users.FirstOrDefault(x =>
-            x.UserName == username && x.Password == password);
-    }
-}
-```
-
----
-
-# 🔐 LOGIN ENDPOINT
-
-```csharp
-[HttpPost("/login")]
-public async Task<IResult> Login(
-    HttpContext ctx,
-    UserStore store,
-    string username,
-    string password)
-{
-    var user = store.Validate(username, password);
-
-    if (user == null)
-        return Results.Unauthorized();
-
-    var claims = new List<Claim>
-    {
-        new Claim(ClaimTypes.Name, user.UserName)
-    };
-
-    foreach (var g in user.Groups)
-        claims.Add(new Claim("groups", g));
-
-    var identity = new ClaimsIdentity(claims, "AppCookie");
-
-    await ctx.SignInAsync("AppCookie", new ClaimsPrincipal(identity));
-
-    return Results.Ok();
-}
-```
-
----
-
-# 🧭 SNAPSHOT MAPPER
+# 🧱 1. SNAPSHOT MAPPER (ASP.NET LAYER)
 
 ```csharp
 using System.Security.Claims;
-using YourApp.Security;
+
+namespace YourApp.Security;
 
 public static class UserSnapshotMapper
 {
@@ -337,79 +74,248 @@ public static class UserSnapshotMapper
 
 ---
 
-# 🌐 BLAZOR SAMPLE
+# 🔐 2. GROUP REQUIREMENT
 
-```razor
-@inject AuthenticationStateProvider Auth
-@inject UserContextBuilder Builder
+```csharp
+using Microsoft.AspNetCore.Authorization;
 
-@if (user == null)
+namespace YourApp.Security;
+
+public class GroupRequirement : IAuthorizationRequirement
 {
-    <p>Loading...</p>
-}
-else
-{
-    <p>User: @user.UserName</p>
-    <p>Source: @(user.IsAdUser ? "AD" : "Local")</p>
+    public string Group { get; }
 
-    <h4>Groups</h4>
-    <ul>
-        @foreach (var g in user.Groups)
-        {
-            <li>@g</li>
-        }
-    </ul>
-}
-
-@code {
-    private UserContext? user;
-
-    protected override async Task OnInitializedAsync()
+    public GroupRequirement(string group)
     {
-        var state = await Auth.GetAuthenticationStateAsync();
-        var snap = UserSnapshotMapper.Map(state.User);
-        user = Builder.Build(snap);
+        Group = group;
     }
 }
 ```
 
 ---
 
-# 🌐 API SAMPLE
+# 🔐 3. AUTHORIZATION HANDLER
 
 ```csharp
-[Authorize]
-[HttpGet("/me")]
-public IActionResult Me(UserContextBuilder builder)
+using Microsoft.AspNetCore.Authorization;
+
+namespace YourApp.Security;
+
+public class GroupHandler : AuthorizationHandler<GroupRequirement>
 {
-    var snap = UserSnapshotMapper.Map(User);
-    return Ok(builder.Build(snap));
+    private readonly UserContextBuilder _builder;
+
+    public GroupHandler(UserContextBuilder builder)
+    {
+        _builder = builder;
+    }
+
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        GroupRequirement requirement)
+    {
+        var snap = UserSnapshotMapper.Map(context.User);
+        var user = _builder.Build(snap);
+
+        if (user.Groups.Any(g =>
+            g.Equals(requirement.Group, StringComparison.OrdinalIgnoreCase)))
+        {
+            context.Succeed(requirement);
+        }
+
+        return Task.CompletedTask;
+    }
 }
 ```
 
 ---
 
-# 🧠 FINAL RESULT
+# ⚙️ 4. EXTENSION METHOD (THE MAIN PIECE)
 
-You now have:
+```csharp
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.DependencyInjection;
 
-✔ Pure group-based security
-✔ Nested group resolution
-✔ No roles anywhere
-✔ AD + non-AD login support
-✔ 7-minute timeout (non-AD only)
-✔ Cached AD-ready architecture
-✔ Unified user context across Blazor + API
-✔ Fully decoupled Security project
+namespace YourApp.Security;
+
+public static class SecurityExtensions
+{
+    public static IServiceCollection AddAppSecurity(
+        this IServiceCollection services,
+        IConfiguration config)
+    {
+        // ------------------------
+        // AUTHENTICATION
+        // ------------------------
+        services.AddAuthentication("Hybrid")
+            .AddPolicyScheme("Hybrid", "Hybrid Auth", options =>
+            {
+                options.ForwardDefaultSelector = context =>
+                {
+                    if (context.User?.Identity?.AuthenticationType == "Negotiate")
+                        return NegotiateDefaults.AuthenticationScheme;
+
+                    return "AppCookie";
+                };
+            })
+            .AddNegotiate()
+            .AddCookie("AppCookie", options =>
+            {
+                options.LoginPath = "/login";
+
+                // ONLY affects non-AD users
+                options.ExpireTimeSpan = TimeSpan.FromMinutes(7);
+                options.SlidingExpiration = true;
+            });
+
+        // ------------------------
+        // AUTHORIZATION
+        // ------------------------
+        services.AddAuthorization();
+
+        services.AddSingleton<IAuthorizationHandler, GroupHandler>();
+
+        // ------------------------
+        // GROUP CONFIG (CODE-BASED)
+        // ------------------------
+        var groupMap = new Dictionary<string, List<string>>
+        {
+            ["IT"] = new() { "Developers" },
+            ["Developers"] = new() { "Backend" }
+        };
+
+        services.AddSingleton<IGroupResolver>(new GroupResolver(groupMap));
+
+        // ------------------------
+        // CORE SERVICES
+        // ------------------------
+        services.AddScoped<UserContextBuilder>();
+
+        return services;
+    }
+}
+```
+
+---
+
+# 🌐 5. USING IT IN BLAZOR
+
+## Program.cs
+
+```csharp
+builder.Services.AddAppSecurity(builder.Configuration);
+
+var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
+```
+
+---
+
+## Protect a page
+
+```razor
+@attribute [Authorize(Policy = "ITOnly")]
+```
+
+---
+
+## Add policy (important)
+
+```csharp
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("ITOnly",
+        p => p.Requirements.Add(new GroupRequirement("IT")));
+});
+```
+
+---
+
+# 🌐 6. USING IT IN API
+
+## Program.cs
+
+```csharp
+builder.Services.AddAppSecurity(builder.Configuration);
+
+var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
+```
+
+---
+
+## Secure endpoint
+
+```csharp
+[Authorize(Policy = "ITOnly")]
+[HttpGet("/secure")]
+public IActionResult Secure()
+{
+    return Ok("You are in IT");
+}
+```
+
+---
+
+# 🧠 WHAT YOU ACHIEVED
+
+## ✔ One-line setup
+
+```csharp
+builder.Services.AddAppSecurity(config);
+```
+
+---
+
+## ✔ Works in BOTH
+
+* Blazor Server
+* API
+
+---
+
+## ✔ Clean separation
+
+| Layer         | Responsibility |
+| ------------- | -------------- |
+| Security Core | groups, rules  |
+| ASP.NET Layer | auth, policies |
+| App           | UI / endpoints |
+
+---
+
+## ✔ Group-based authorization only
+
+* No roles
+* Nested groups supported
+* Case-insensitive matching
+
+---
+
+## ✔ Correct timeout behavior
+
+* AD users → controlled by Windows
+* Non-AD → 7-minute sliding cookie
 
 ---
 
 # 🧠 FINAL TAKEAWAY
 
-> Groups are now your **single source of truth**
-> Everything else (roles, policies, etc.) becomes unnecessary complexity
+> You now have a **plug-and-play security module** that:
+
+* abstracts authentication
+* centralizes authorization
+* works across multiple app types
+* keeps your domain clean
 
 ---
 
 If you want next step, I can show you:
-👉 how to wire this to **real Active Directory (LDAP) to fetch nested groups dynamically instead of using the in-memory map**
+👉 how to extend this so **group rules come from config/appsettings instead of code (no redeploy needed)**
