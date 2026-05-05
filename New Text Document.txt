@@ -1,148 +1,206 @@
-Here’s the **clean, production-ready setup** for your **.NET 10 Blazor Server app with Windows Authentication + AD enrichment + best-practice caching (sliding + absolute expiration)**.
+Here’s the **full end-to-end design** so your **Blazor app, API, and any future services all consume the exact same unified user context**, without duplicating auth logic anywhere.
 
-This is the full implementation you actually want in real use.
+The key idea is:
+
+> Authentication happens per app, but **user context is generated once and standardised everywhere via a shared Security project**.
 
 ---
 
-# ✅ 1. Required NuGet packages
+# 🧠 Target architecture
 
-Run these:
-
-```bash id="p1k8xq"
-dotnet add package Microsoft.AspNetCore.Authentication.Negotiate
-dotnet add package System.DirectoryServices.AccountManagement
-dotnet add package System.DirectoryServices
-dotnet add package Microsoft.Extensions.Caching.Memory
+```text id="arch"
+                 ┌──────────────┐
+                 │  Blazor App  │
+                 └──────┬───────┘
+                        │
+                 ┌──────▼───────┐
+                 │   API App    │
+                 └──────┬───────┘
+                        │
+        ┌───────────────▼────────────────┐
+        │     YourApp.Security           │
+        │  (Unified User Context Core)   │
+        │                                │
+        │ - Claims normalization         │
+        │ - AD + Identity mapping        │
+        │ - Role + policy definitions    │
+        │ - UserContext builder          │
+        └───────────────┬────────────────┘
+                        │
+         AD + Identity sources (external)
 ```
 
 ---
 
-# 🧠 What each package does
+# 🧠 CORE PRINCIPLE
 
-* **Negotiate** → Windows Authentication (Kerberos/NTLM)
-* **DirectoryServices.AccountManagement** → Find AD users
-* **DirectoryServices** → Read AD attributes (mail, department, title)
-* **MemoryCache** → Cache AD results (prevents repeated lookups)
+> Every app produces authentication differently, but they all converge into the same:
+
+### ✔ UnifiedUserContext
+
+This is what everything uses internally.
 
 ---
 
-# ✅ 2. Program.cs setup (global auth + caching)
+# 📦 STEP 1 — Create Security Project
 
-```csharp id="c8qv6m"
-using Microsoft.AspNetCore.Authentication.Negotiate;
-
-var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
-    .AddNegotiate();
-
-builder.Services.AddAuthorization();
-
-builder.Services.AddMemoryCache();
-
-builder.Services.AddScoped<AdService>();
-builder.Services.AddScoped<IClaimsTransformation, AdClaimsTransformation>();
-
-builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
-
-var app = builder.Build();
-
-app.UseAuthentication();
-app.UseAuthorization();
-
-app.MapRazorComponents<App>()
-    .AddInteractiveServerRenderMode()
-    .RequireAuthorization(); // 🔒 global enforcement
-
-app.Run();
+```bash id="s1"
+dotnet new classlib -n YourApp.Security
 ```
 
+Reference it from:
+
+* Blazor Server
+* API
+* future worker services
+
 ---
 
-# ✅ 3. AD model
+# 🧱 STEP 2 — Define the Unified User Context (IMPORTANT)
 
-```csharp id="x4v7nz"
-public class AdUserInfo
+This is the shared model EVERY app uses.
+
+```csharp id="s2"
+public class UnifiedUserContext
 {
+    public string? UserName { get; set; }
+    public string? DisplayName { get; set; }
     public string? Email { get; set; }
     public string? Department { get; set; }
     public string? JobTitle { get; set; }
+
+    public bool IsAdUser { get; set; }
+
+    public List<string> Roles { get; set; } = new();
 }
 ```
 
+👉 This becomes your **single source of truth for identity**
+
 ---
 
-# 🚀 4. AD service with BEST caching strategy
+# 🔐 STEP 3 — Claims standard (UI + API contract)
 
-This is the important part.
+Every system MUST produce these claims:
 
-✔ Sliding expiration = keeps active users fast
-✔ Absolute expiration = ensures fresh AD data eventually
+| Claim        | Purpose        |
+| ------------ | -------------- |
+| display_name | UI name        |
+| email        | user email     |
+| department   | department     |
+| job_title    | job title      |
+| role         | authorization  |
+| is_ad_user   | AD vs Identity |
 
-```csharp id="m9q2lk"
-using System.DirectoryServices;
-using System.DirectoryServices.AccountManagement;
-using Microsoft.Extensions.Caching.Memory;
+---
 
-public class AdService
+# 🧠 STEP 4 — Unified Context Builder (core engine)
+
+This is the most important component.
+
+```csharp id="s3"
+public interface IUserContextBuilder
 {
-    private readonly IMemoryCache _cache;
+    Task<UnifiedUserContext> BuildAsync(ClaimsPrincipal principal);
+}
+```
 
-    public AdService(IMemoryCache cache)
+---
+
+## Implementation
+
+```csharp id="s4"
+public class UserContextBuilder : IUserContextBuilder
+{
+    private readonly AdService _adService;
+    private readonly UserManager<ApplicationUser>? _userManager;
+
+    public UserContextBuilder(
+        AdService adService,
+        UserManager<ApplicationUser>? userManager = null)
     {
-        _cache = cache;
+        _adService = adService;
+        _userManager = userManager;
     }
 
-    public AdUserInfo? GetUserInfo(string username)
+    public async Task<UnifiedUserContext> BuildAsync(ClaimsPrincipal principal)
     {
-        // Normalize DOMAIN\user → user
-        var sam = username.Contains("\\")
-            ? username.Split('\\')[1]
-            : username;
+        var identity = principal.Identity!;
+        var username = identity.Name;
 
-        var cacheKey = $"ad_user_{sam}";
-
-        return _cache.GetOrCreate(cacheKey, entry =>
+        var context = new UnifiedUserContext
         {
-            // ⭐ BEST PRACTICE CACHE POLICY
-            entry.SlidingExpiration = TimeSpan.FromMinutes(3);
-            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10);
+            UserName = username
+        };
 
-            using var context = new PrincipalContext(ContextType.Domain);
-            var user = UserPrincipal.FindByIdentity(context, sam);
+        // -------------------------
+        // AD USERS
+        // -------------------------
+        if (identity.AuthenticationType == "Negotiate")
+        {
+            var adUser = _adService.GetUserInfo(username);
 
-            if (user == null)
-                return null;
+            context.DisplayName = $"{adUser?.FirstName} {adUser?.LastName}";
+            context.Email = adUser?.Email;
+            context.Department = adUser?.Department;
+            context.JobTitle = adUser?.JobTitle;
+            context.IsAdUser = true;
 
-            var de = (DirectoryEntry)user.GetUnderlyingObject();
+            context.Roles = principal.Claims
+                .Where(c => c.Type == ClaimTypes.Role)
+                .Select(c => c.Value)
+                .ToList();
 
-            return new AdUserInfo
+            return context;
+        }
+
+        // -------------------------
+        // IDENTITY USERS
+        // -------------------------
+        if (_userManager != null)
+        {
+            var user = await _userManager.FindByNameAsync(username!);
+
+            if (user != null)
             {
-                Email = de.Properties["mail"]?.Value?.ToString(),
-                Department = de.Properties["department"]?.Value?.ToString(),
-                JobTitle = de.Properties["title"]?.Value?.ToString()
-            };
-        });
+                context.DisplayName = user.DisplayName;
+                context.Email = user.Email;
+                context.Department = user.Department;
+                context.JobTitle = user.JobTitle;
+                context.IsAdUser = false;
+
+                context.Roles = principal.Claims
+                    .Where(c => c.Type == ClaimTypes.Role)
+                    .Select(c => c.Value)
+                    .ToList();
+            }
+        }
+
+        return context;
     }
 }
 ```
 
 ---
 
-# 🔐 5. Claims transformation (inject AD data into user)
+# ⚙️ STEP 5 — Register in Security project
 
-This makes AD data available everywhere in Blazor as claims.
+```csharp id="s5"
+services.AddScoped<IUserContextBuilder, UserContextBuilder>();
+```
 
-```csharp id="v0h8dd"
-using System.Security.Claims;
-using Microsoft.AspNetCore.Authentication;
+---
 
-public class AdClaimsTransformation : IClaimsTransformation
+# 🧠 STEP 6 — ClaimsTransformer (still used for UI)
+
+This ensures Blazor UI remains simple.
+
+```csharp id="s6"
+public class ClaimsTransformer : IClaimsTransformation
 {
     private readonly AdService _adService;
 
-    public AdClaimsTransformation(AdService adService)
+    public ClaimsTransformer(AdService adService)
     {
         _adService = adService;
     }
@@ -151,399 +209,160 @@ public class AdClaimsTransformation : IClaimsTransformation
     {
         var identity = (ClaimsIdentity)principal.Identity!;
 
-        // Avoid duplicate work
-        if (identity.HasClaim(c => c.Type == "department"))
+        if (!identity.IsAuthenticated)
             return Task.FromResult(principal);
 
-        var username = principal.Identity?.Name;
+        var username = identity.Name;
 
-        if (!string.IsNullOrEmpty(username))
+        var adUser = _adService.GetUserInfo(username);
+
+        if (adUser != null && identity.AuthenticationType == "Negotiate")
         {
-            var info = _adService.GetUserInfo(username);
-
-            if (info != null)
-            {
-                if (!string.IsNullOrEmpty(info.Email))
-                    identity.AddClaim(new Claim(ClaimTypes.Email, info.Email));
-
-                if (!string.IsNullOrEmpty(info.Department))
-                    identity.AddClaim(new Claim("department", info.Department));
-
-                if (!string.IsNullOrEmpty(info.JobTitle))
-                    identity.AddClaim(new Claim("jobTitle", info.JobTitle));
-            }
+            Add(identity, "display_name", $"{adUser.FirstName} {adUser.LastName}");
+            Add(identity, "email", adUser.Email);
+            Add(identity, "department", adUser.Department);
+            Add(identity, "job_title", adUser.JobTitle);
+            Add(identity, "is_ad_user", "true");
+        }
+        else
+        {
+            Add(identity, "is_ad_user", "false");
         }
 
         return Task.FromResult(principal);
     }
+
+    private static void Add(ClaimsIdentity identity, string type, string value)
+    {
+        if (identity.HasClaim(c => c.Type == type))
+            return;
+
+        identity.AddClaim(new Claim(type, value));
+    }
 }
 ```
 
 ---
 
-# 📄 6. Using it in Blazor (simple + global auth ready)
+# 🌐 STEP 7 — Blazor usage (NO auth logic)
 
-Since you are enforcing auth globally, this always works:
+```razor id="s7"
+@inject IUserContextBuilder UserContextBuilder
+@inject AuthenticationStateProvider AuthStateProvider
 
-```razor id="c2p7wq"
-<AuthorizeView Context="authState">
-    <h3>User Info</h3>
+@code {
+    private UnifiedUserContext? user;
 
-    <p><b>Name:</b> @authState.User.Identity?.Name</p>
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
 
-    <p><b>Email:</b> @authState.User.FindFirst(System.Security.Claims.ClaimTypes.Email)?.Value</p>
-
-    <p><b>Department:</b> @authState.User.FindFirst("department")?.Value</p>
-
-    <p><b>Job Title:</b> @authState.User.FindFirst("jobTitle")?.Value</p>
-</AuthorizeView>
+        user = await UserContextBuilder.BuildAsync(authState.User);
+    }
+}
 ```
 
 ---
 
-# 🧠 What your final system does
+# 🌐 STEP 8 — API usage (same model)
 
-### On first request:
+In API controller:
 
-* Authenticate via Windows
-* Query AD
-* Cache result (10 min max)
+```csharp id="s8"
+[Authorize]
+[HttpGet("/me")]
+public async Task<IActionResult> GetMe(
+    IUserContextBuilder builder)
+{
+    var user = await builder.BuildAsync(User);
 
-### For next requests:
+    return Ok(user);
+}
+```
 
-* Uses cached AD data instantly
-* No AD hit (fast UI)
-
-### After:
-
-* 3 minutes inactive → sliding expiry starts
-* 10 minutes max → forced refresh from AD
-
----
-
-# ⚖️ Why this is the “best option”
-
-✔ Fast for users (no AD lag)
-✔ Reduces AD load heavily
-✔ Keeps data reasonably fresh
-✔ Prevents stale infinite cache (absolute cap)
-✔ Safe for Blazor Server concurrency
+👉 Same object as Blazor
 
 ---
 
-# ✔️ Final summary
+# 🧠 STEP 9 — Background services (optional but powerful)
+
+```csharp id="s9"
+var context = await _userContextBuilder.BuildAsync(principal);
+```
+
+Same identity model everywhere.
+
+---
+
+# 🧭 STEP 10 — What the UI uses
+
+UI NEVER reads claims directly anymore:
+
+### ❌ Avoid:
+
+```csharp id="bad1"
+User.FindFirst("department")
+```
+
+### ✅ Use:
+
+```csharp id="good1"
+UnifiedUserContext.Department
+```
+
+---
+
+# ⚠️ RULES (important)
+
+### ✔ Always:
+
+* Build user context via `UserContextBuilder`
+* Use claims only as transport layer
+* Use `UnifiedUserContext` for logic
+
+### ❌ Never:
+
+* Duplicate AD logic in API or Blazor
+* Read raw claims in business logic
+* Rebuild user model in multiple places
+
+---
+
+# 🧠 FINAL ARCHITECTURE
+
+```text id="final"
+                ┌──────────────┐
+                │   Blazor     │
+                └──────┬───────┘
+                       │
+                ┌──────▼───────┐
+                │     API      │
+                └──────┬───────┘
+                       │
+        ┌──────────────▼──────────────┐
+        │   Security Project          │
+        │                            │
+        │ - UserContextBuilder       │
+        │ - ClaimsTransformer        │
+        │ - AD Service               │
+        │ - Authorization Policies   │
+        └────────────────────────────┘
+```
+
+---
+
+# ✔️ FINAL RESULT
 
 You now have:
 
-* Windows Authentication (Negotiate)
-* AD enrichment (department, title, email)
-* Claims injection
-* **Hybrid caching strategy (sliding + absolute)**
+* ✔ One unified user model across ALL apps
+* ✔ Blazor and API consume identical identity structure
+* ✔ AD and Identity fully abstracted away
+* ✔ No duplicated auth logic anywhere
+* ✔ Clean separation of concerns
+* ✔ Future-proof for workers/services
 
 ---
 
-If you want next improvement, the real enterprise upgrade is:
-👉 **background refresh so users never wait on AD at all** (zero-latency identity enrichment).
-
-
-======================================================
-
-Good—this is where things start looking like a real production system. I’ll give you **practical unit tests + a simple integration-style test approach** for your AD caching service.
-
-Because AD is external and not reliably testable in unit tests, we’ll **mock it properly** instead of hitting a real domain.
-
----
-
-# 🧪 1. What we are testing
-
-We’ll cover:
-
-### ✔ AdService
-
-* Caches results
-* Returns expected values
-* Does NOT re-query AD within cache window
-
-### ✔ Claims transformation
-
-* Adds correct claims
-* Does not duplicate claims
-
----
-
-# 📦 2. Test packages to install
-
-```bash id="t1k9ab"
-dotnet add package xunit
-dotnet add package xunit.runner.visualstudio
-dotnet add package Moq
-dotnet add package Microsoft.NET.Test.Sdk
-dotnet add package Microsoft.Extensions.Caching.Memory
-```
-
----
-
-# 🧱 3. Refactor for testability (important)
-
-Right now AD is hardcoded inside `AdService`.
-We need to **abstract AD access** so we can mock it.
-
----
-
-## Step 1 — Create interface
-
-```csharp id="if3p2m"
-public interface IAdDirectory
-{
-    AdUserInfo? GetUser(string username);
-}
-```
-
----
-
-## Step 2 — Real AD implementation
-
-```csharp id="ad9xq2"
-using System.DirectoryServices;
-using System.DirectoryServices.AccountManagement;
-
-public class AdDirectory : IAdDirectory
-{
-    public AdUserInfo? GetUser(string username)
-    {
-        var sam = username.Contains("\\")
-            ? username.Split('\\')[1]
-            : username;
-
-        using var context = new PrincipalContext(ContextType.Domain);
-        var user = UserPrincipal.FindByIdentity(context, sam);
-
-        if (user == null)
-            return null;
-
-        var de = (DirectoryEntry)user.GetUnderlyingObject();
-
-        return new AdUserInfo
-        {
-            Email = de.Properties["mail"]?.Value?.ToString(),
-            Department = de.Properties["department"]?.Value?.ToString(),
-            JobTitle = de.Properties["title"]?.Value?.ToString()
-        };
-    }
-}
-```
-
----
-
-## Step 3 — Update service (now testable)
-
-```csharp id="sv6qz1"
-using Microsoft.Extensions.Caching.Memory;
-
-public class AdService
-{
-    private readonly IMemoryCache _cache;
-    private readonly IAdDirectory _ad;
-
-    public AdService(IMemoryCache cache, IAdDirectory ad)
-    {
-        _cache = cache;
-        _ad = ad;
-    }
-
-    public AdUserInfo? GetUserInfo(string username)
-    {
-        var cacheKey = $"ad_user_{username}";
-
-        return _cache.GetOrCreate(cacheKey, entry =>
-        {
-            entry.SlidingExpiration = TimeSpan.FromMinutes(3);
-            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10);
-
-            return _ad.GetUser(username);
-        });
-    }
-}
-```
-
----
-
-# 🧪 4. Unit tests (xUnit + Moq)
-
-## ✔ Test: returns AD data
-
-```csharp id="ut1"
-using Xunit;
-using Moq;
-using Microsoft.Extensions.Caching.Memory;
-
-public class AdServiceTests
-{
-    [Fact]
-    public void GetUserInfo_ReturnsAdData()
-    {
-        var cache = new MemoryCache(new MemoryCacheOptions());
-
-        var adMock = new Mock<IAdDirectory>();
-        adMock.Setup(x => x.GetUser("DOMAIN\\jdoe"))
-            .Returns(new AdUserInfo
-            {
-                Email = "jdoe@test.com",
-                Department = "IT",
-                JobTitle = "Engineer"
-            });
-
-        var service = new AdService(cache, adMock.Object);
-
-        var result = service.GetUserInfo("DOMAIN\\jdoe");
-
-        Assert.NotNull(result);
-        Assert.Equal("jdoe@test.com", result!.Email);
-        Assert.Equal("IT", result.Department);
-        Assert.Equal("Engineer", result.JobTitle);
-    }
-}
-```
-
----
-
-## ✔ Test: caching prevents second AD call
-
-```csharp id="ut2"
-[Fact]
-public void GetUserInfo_UsesCache_NotADTwice()
-{
-    var cache = new MemoryCache(new MemoryCacheOptions());
-
-    var adMock = new Mock<IAdDirectory>();
-
-    adMock.Setup(x => x.GetUser(It.IsAny<string>()))
-        .Returns(new AdUserInfo { Email = "a@b.com" });
-
-    var service = new AdService(cache, adMock.Object);
-
-    // First call → hits AD
-    var r1 = service.GetUserInfo("DOMAIN\\jdoe");
-
-    // Second call → should NOT hit AD again
-    var r2 = service.GetUserInfo("DOMAIN\\jdoe");
-
-    adMock.Verify(x => x.GetUser("DOMAIN\\jdoe"), Times.Once);
-
-    Assert.Equal(r1!.Email, r2!.Email);
-}
-```
-
----
-
-## ✔ Test: cache expiry behavior (simulated)
-
-```csharp id="ut3"
-[Fact]
-public void CacheStoresValue()
-{
-    var cache = new MemoryCache(new MemoryCacheOptions());
-
-    var adMock = new Mock<IAdDirectory>();
-
-    adMock.Setup(x => x.GetUser(It.IsAny<string>()))
-        .Returns(new AdUserInfo { Email = "test@test.com" });
-
-    var service = new AdService(cache, adMock.Object);
-
-    var first = service.GetUserInfo("DOMAIN\\jdoe");
-    var second = service.GetUserInfo("DOMAIN\\jdoe");
-
-    Assert.Equal(first!.Email, second!.Email);
-
-    adMock.Verify(x => x.GetUser(It.IsAny<string>()), Times.Once);
-}
-```
-
----
-
-# 🧪 5. Claims transformation test
-
-```csharp id="ct1"
-using System.Security.Claims;
-using Xunit;
-using Moq;
-
-public class ClaimsTests
-{
-    [Fact]
-    public async Task AddsAdClaims()
-    {
-        var cache = new MemoryCache(new MemoryCacheOptions());
-
-        var adMock = new Mock<IAdDirectory>();
-        adMock.Setup(x => x.GetUser("DOMAIN\\jdoe"))
-            .Returns(new AdUserInfo
-            {
-                Email = "jdoe@test.com",
-                Department = "IT",
-                JobTitle = "Dev"
-            });
-
-        var service = new AdService(cache, adMock.Object);
-        var transformer = new AdClaimsTransformation(service);
-
-        var identity = new ClaimsIdentity(new[]
-        {
-            new Claim(ClaimTypes.Name, "DOMAIN\\jdoe")
-        }, "Test");
-
-        var principal = new ClaimsPrincipal(identity);
-
-        var result = await transformer.TransformAsync(principal);
-
-        Assert.Contains(result.Claims, c => c.Type == ClaimTypes.Email);
-        Assert.Contains(result.Claims, c => c.Type == "department");
-        Assert.Contains(result.Claims, c => c.Type == "jobTitle");
-    }
-}
-```
-
----
-
-# 🧠 Key testing takeaway
-
-You are NOT testing AD.
-
-You are testing:
-
-✔ caching logic
-✔ transformation logic
-✔ claim enrichment
-✔ service behavior
-
-AD itself is always mocked.
-
----
-
-# ⚖️ Optional upgrade (if you want “real” integration tests)
-
-You can later add:
-
-* Test server (`WebApplicationFactory`)
-* Fake authentication user
-* Blazor endpoint validation
-
-But that’s optional for now.
-
----
-
-# ✔️ Final result
-
-You now have:
-
-* Fully testable AD service
-* Cached logic verified
-* Claims transformation validated
-* No dependency on real AD in tests
-* Safe CI/CD pipeline readiness
-
----
-
-If you want next step, I can show you how to:
-👉 test Blazor components directly (render + assert UI claims) using bUnit.
+If you want next step, I can show you:
+👉 how to extend this so **role changes in AD instantly reflect across all running apps without logout or restart (real-time refresh model)**
