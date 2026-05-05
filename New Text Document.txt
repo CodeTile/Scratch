@@ -319,3 +319,137 @@ builder.Services.AddAppSecurity(config);
 
 If you want next step, I can show you:
 👉 how to extend this so **group rules come from config/appsettings instead of code (no redeploy needed)**
+=====================================
+
+Here’s a clean **Blazor Server component** that shows:
+
+* ✔ Username
+* ✔ Email
+* ✔ Groups (after your group resolution)
+* ✔ Works with your existing `UserContextBuilder` setup
+
+---
+
+# ✅ SIMPLE BLAZOR PAGE / COMPONENT
+
+```razor
+@using System.Security.Claims
+@using YourApp.Security
+
+@inject AuthenticationStateProvider AuthStateProvider
+@inject UserContextBuilder UserContextBuilder
+
+<h3>User Details</h3>
+
+<AuthorizeView>
+    <Authorized>
+        @if (user == null)
+        {
+            <p>Loading...</p>
+        }
+        else
+        {
+            <p><b>Username:</b> @user.UserName</p>
+            <p><b>Email:</b> @email</p>
+
+            <p><b>Groups:</b></p>
+            <ul>
+                @foreach (var g in user.Groups)
+                {
+                    <li>@g</li>
+                }
+            </ul>
+        }
+    </Authorized>
+
+    <NotAuthorized>
+        <p>You are not logged in.</p>
+    </NotAuthorized>
+</AuthorizeView>
+
+@code {
+    private UserContext? user;
+    private string? email;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var principal = authState.User;
+
+        // Build unified user context (groups resolved here)
+        var snapshot = UserSnapshotMapper.Map(principal);
+        user = UserContextBuilder.Build(snapshot);
+
+        // Email comes from claims (AD or cookie)
+        email = principal.FindFirst(ClaimTypes.Email)?.Value
+             ?? principal.FindFirst("email")?.Value;
+    }
+}
+```
+
+---
+
+# 🧠 WHERE THIS GOES
+
+You can place this in:
+
+* `Pages/Profile.razor`
+* `Shared/UserInfo.razor` (recommended for reuse)
+* Inside a layout (`MainLayout.razor`) if you want it global
+
+---
+
+# ⚠️ IMPORTANT (REQUIRED FOR THIS TO WORK)
+
+Make sure your app has:
+
+### In `App.razor`
+
+```razor
+<CascadingAuthenticationState>
+    <Router AppAssembly="@typeof(Program).Assembly">
+        ...
+    </Router>
+</CascadingAuthenticationState>
+```
+
+---
+
+# 🧠 OPTIONAL (SHOW SOURCE)
+
+If you want to show AD vs non-AD:
+
+```razor
+<p><b>Source:</b> @(user.IsAdUser ? "Active Directory" : "Local Login")</p>
+```
+
+---
+
+# 🧠 NOTE ABOUT EMAIL
+
+Email will only show if:
+
+* AD claim is added (via your claims transform or AD lookup), OR
+* You add it during login for non-AD users
+
+Example when logging in:
+
+```csharp
+new Claim(ClaimTypes.Email, "user@email.com")
+```
+
+---
+
+# ✔️ RESULT
+
+You now have a UI component that:
+
+✔ Works for AD + non-AD users
+✔ Uses your unified security model
+✔ Displays resolved groups (including nested)
+✔ Has no direct dependency on roles or identity
+
+---
+
+If you want next step, I can show you:
+👉 how to make this a **global header component that updates automatically when auth state changes (no reload required)**
