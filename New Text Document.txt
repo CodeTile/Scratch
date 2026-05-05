@@ -1,368 +1,433 @@
-Here’s the **full end-to-end design** so your **Blazor app, API, and any future services all consume the exact same unified user context**, without duplicating auth logic anywhere.
-
-The key idea is:
-
-> Authentication happens per app, but **user context is generated once and standardised everywhere via a shared Security project**.
+Below is a **complete, clean, copy-pasteable architecture** that meets all your requirements:
 
 ---
 
-# 🧠 Target architecture
+# 🧱 WHAT YOU GET
+
+✔ AD authentication (Windows auth)
+✔ Optional Identity login (non-AD users)
+✔ Cached Active Directory lookups
+✔ 7-minute inactivity timeout for non-AD users
+✔ Group → Role mapping in code
+✔ Nested AD group support (via resolver hook)
+✔ Unified user context (Blazor + API)
+✔ Fully separated Security project
+✔ Working samples for Blazor + API
+✔ Package list for csproj
+
+---
+
+# 🧠 ARCHITECTURE OVERVIEW
 
 ```text id="arch"
-                 ┌──────────────┐
-                 │  Blazor App  │
-                 └──────┬───────┘
-                        │
-                 ┌──────▼───────┐
-                 │   API App    │
-                 └──────┬───────┘
-                        │
-        ┌───────────────▼────────────────┐
-        │     YourApp.Security           │
-        │  (Unified User Context Core)   │
-        │                                │
-        │ - Claims normalization         │
-        │ - AD + Identity mapping        │
-        │ - Role + policy definitions    │
-        │ - UserContext builder          │
-        └───────────────┬────────────────┘
-                        │
-         AD + Identity sources (external)
+                ┌──────────────┐
+                │   Blazor     │
+                └────┬─────────┘
+                     │
+                ┌────▼─────┐
+                │  API     │
+                └────┬─────┘
+                     │
+        ┌────────────▼────────────┐
+        │   YourApp.Security      │
+        │  (PURE SECURITY CORE)   │
+        │                         │
+        │ - Group resolution      │
+        │ - Role mapping         │
+        │ - UserContext builder  │
+        │ - AD cache abstraction │
+        └────────────┬───────────┘
+                     │
+         AD (LDAP / Windows / Identity)
 ```
 
 ---
 
-# 🧠 CORE PRINCIPLE
+# 📦 1. SECURITY PROJECT (.csproj PACKAGES)
 
-> Every app produces authentication differently, but they all converge into the same:
+### Copy into `YourApp.Security.csproj`
 
-### ✔ UnifiedUserContext
+```xml id="pkg"
+<ItemGroup>
 
-This is what everything uses internally.
+  <!-- Identity types (needed for UserManager only if used in host) -->
+  <PackageReference Include="Microsoft.AspNetCore.Identity" Version="10.0.0" />
 
----
+  <!-- Caching abstractions (framework-free interface usage) -->
+  <PackageReference Include="Microsoft.Extensions.Caching.Abstractions" Version="10.0.0" />
 
-# 📦 STEP 1 — Create Security Project
+  <!-- Dependency injection abstractions -->
+  <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
 
-```bash id="s1"
-dotnet new classlib -n YourApp.Security
+</ItemGroup>
 ```
 
-Reference it from:
+👉 NOTE:
 
-* Blazor Server
-* API
-* future worker services
+* NO ASP.NET Core runtime packages
+* NO Blazor packages
+* NO Authentication packages
 
 ---
 
-# 🧱 STEP 2 — Define the Unified User Context (IMPORTANT)
+# 🧱 2. UNIFIED USER CONTEXT
 
-This is the shared model EVERY app uses.
+```csharp id="ctx"
+namespace YourApp.Security;
 
-```csharp id="s2"
-public class UnifiedUserContext
+public class UserContext
 {
     public string? UserName { get; set; }
     public string? DisplayName { get; set; }
-    public string? Email { get; set; }
-    public string? Department { get; set; }
-    public string? JobTitle { get; set; }
 
     public bool IsAdUser { get; set; }
 
+    public List<string> Groups { get; set; } = new();
     public List<string> Roles { get; set; } = new();
 }
 ```
 
-👉 This becomes your **single source of truth for identity**
-
 ---
 
-# 🔐 STEP 3 — Claims standard (UI + API contract)
+# 🧠 3. INPUT MODEL (from Blazor/API host)
 
-Every system MUST produce these claims:
+```csharp id="input"
+namespace YourApp.Security;
 
-| Claim        | Purpose        |
-| ------------ | -------------- |
-| display_name | UI name        |
-| email        | user email     |
-| department   | department     |
-| job_title    | job title      |
-| role         | authorization  |
-| is_ad_user   | AD vs Identity |
-
----
-
-# 🧠 STEP 4 — Unified Context Builder (core engine)
-
-This is the most important component.
-
-```csharp id="s3"
-public interface IUserContextBuilder
+public class ExternalUserSnapshot
 {
-    Task<UnifiedUserContext> BuildAsync(ClaimsPrincipal principal);
+    public string? UserName { get; set; }
+    public bool IsAdUser { get; set; }
+
+    public List<string> DirectGroups { get; set; } = new();
 }
 ```
 
 ---
 
-## Implementation
+# ⚡ 4. AD CACHE SERVICE (7 min TTL support)
 
-```csharp id="s4"
-public class UserContextBuilder : IUserContextBuilder
+```csharp id="cache"
+using Microsoft.Extensions.Caching.Memory;
+
+namespace YourApp.Security;
+
+public interface IAdCache
 {
-    private readonly AdService _adService;
-    private readonly UserManager<ApplicationUser>? _userManager;
+    T? GetOrCreate<T>(string key, Func<T> factory);
+}
 
-    public UserContextBuilder(
-        AdService adService,
-        UserManager<ApplicationUser>? userManager = null)
+public class AdCache : IAdCache
+{
+    private readonly IMemoryCache _cache;
+
+    public AdCache(IMemoryCache cache)
     {
-        _adService = adService;
-        _userManager = userManager;
+        _cache = cache;
     }
 
-    public async Task<UnifiedUserContext> BuildAsync(ClaimsPrincipal principal)
+    public T? GetOrCreate<T>(string key, Func<T> factory)
     {
-        var identity = principal.Identity!;
-        var username = identity.Name;
-
-        var context = new UnifiedUserContext
+        return _cache.GetOrCreate(key, entry =>
         {
-            UserName = username
-        };
+            entry.SlidingExpiration = TimeSpan.FromMinutes(7);
+            entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(10);
 
-        // -------------------------
-        // AD USERS
-        // -------------------------
-        if (identity.AuthenticationType == "Negotiate")
-        {
-            var adUser = _adService.GetUserInfo(username);
-
-            context.DisplayName = $"{adUser?.FirstName} {adUser?.LastName}";
-            context.Email = adUser?.Email;
-            context.Department = adUser?.Department;
-            context.JobTitle = adUser?.JobTitle;
-            context.IsAdUser = true;
-
-            context.Roles = principal.Claims
-                .Where(c => c.Type == ClaimTypes.Role)
-                .Select(c => c.Value)
-                .ToList();
-
-            return context;
-        }
-
-        // -------------------------
-        // IDENTITY USERS
-        // -------------------------
-        if (_userManager != null)
-        {
-            var user = await _userManager.FindByNameAsync(username!);
-
-            if (user != null)
-            {
-                context.DisplayName = user.DisplayName;
-                context.Email = user.Email;
-                context.Department = user.Department;
-                context.JobTitle = user.JobTitle;
-                context.IsAdUser = false;
-
-                context.Roles = principal.Claims
-                    .Where(c => c.Type == ClaimTypes.Role)
-                    .Select(c => c.Value)
-                    .ToList();
-            }
-        }
-
-        return context;
+            return factory();
+        });
     }
 }
 ```
 
 ---
 
-# ⚙️ STEP 5 — Register in Security project
+# 🧠 5. GROUP RESOLUTION (supports nested groups)
 
-```csharp id="s5"
-services.AddScoped<IUserContextBuilder, UserContextBuilder>();
-```
+```csharp id="groups"
+namespace YourApp.Security;
 
----
-
-# 🧠 STEP 6 — ClaimsTransformer (still used for UI)
-
-This ensures Blazor UI remains simple.
-
-```csharp id="s6"
-public class ClaimsTransformer : IClaimsTransformation
+public interface IGroupResolver
 {
-    private readonly AdService _adService;
+    List<string> ExpandGroups(List<string> directGroups);
+}
 
-    public ClaimsTransformer(AdService adService)
+public class GroupResolver : IGroupResolver
+{
+    private readonly IDictionary<string, List<string>> _groupMap;
+
+    public GroupResolver(IDictionary<string, List<string>> groupMap)
     {
-        _adService = adService;
+        _groupMap = groupMap;
     }
 
-    public Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
+    public List<string> ExpandGroups(List<string> directGroups)
     {
-        var identity = (ClaimsIdentity)principal.Identity!;
+        var result = new HashSet<string>();
+        var visited = new HashSet<string>();
 
-        if (!identity.IsAuthenticated)
-            return Task.FromResult(principal);
+        foreach (var g in directGroups)
+            Resolve(g, result, visited);
 
-        var username = identity.Name;
-
-        var adUser = _adService.GetUserInfo(username);
-
-        if (adUser != null && identity.AuthenticationType == "Negotiate")
-        {
-            Add(identity, "display_name", $"{adUser.FirstName} {adUser.LastName}");
-            Add(identity, "email", adUser.Email);
-            Add(identity, "department", adUser.Department);
-            Add(identity, "job_title", adUser.JobTitle);
-            Add(identity, "is_ad_user", "true");
-        }
-        else
-        {
-            Add(identity, "is_ad_user", "false");
-        }
-
-        return Task.FromResult(principal);
+        return result.ToList();
     }
 
-    private static void Add(ClaimsIdentity identity, string type, string value)
+    private void Resolve(string group, HashSet<string> result, HashSet<string> visited)
     {
-        if (identity.HasClaim(c => c.Type == type))
+        if (!visited.Add(group))
             return;
 
-        identity.AddClaim(new Claim(type, value));
+        result.Add(group);
+
+        if (_groupMap.TryGetValue(group, out var children))
+        {
+            foreach (var c in children)
+                Resolve(c, result, visited);
+        }
     }
 }
 ```
 
 ---
 
-# 🌐 STEP 7 — Blazor usage (NO auth logic)
+# 🧠 6. GROUP → ROLE MAPPING (CONFIGURED IN CODE)
 
-```razor id="s7"
-@inject IUserContextBuilder UserContextBuilder
+```csharp id="roles"
+namespace YourApp.Security;
+
+public interface IRoleMapper
+{
+    List<string> Map(List<string> groups);
+}
+
+public class RoleMapper : IRoleMapper
+{
+    private readonly IDictionary<string, string> _map;
+
+    public RoleMapper(IDictionary<string, string> map)
+    {
+        _map = map;
+    }
+
+    public List<string> Map(List<string> groups)
+    {
+        return groups
+            .Where(g => _map.ContainsKey(g))
+            .Select(g => _map[g])
+            .Distinct()
+            .ToList();
+    }
+}
+```
+
+---
+
+# 🧠 7. CORE USER CONTEXT BUILDER
+
+```csharp id="core"
+namespace YourApp.Security;
+
+public class UserContextBuilder
+{
+    private readonly IGroupResolver _groups;
+    private readonly IRoleMapper _roles;
+
+    public UserContextBuilder(IGroupResolver groups, IRoleMapper roles)
+    {
+        _groups = groups;
+        _roles = roles;
+    }
+
+    public UserContext Build(ExternalUserSnapshot input)
+    {
+        var allGroups = _groups.ExpandGroups(input.DirectGroups);
+        var roles = _roles.Map(allGroups);
+
+        return new UserContext
+        {
+            UserName = input.UserName,
+            Groups = allGroups,
+            Roles = roles,
+            IsAdUser = input.IsAdUser
+        };
+    }
+}
+```
+
+---
+
+# 🌐 8. HOST LAYER (Blazor/API mapping only)
+
+## Claims → Snapshot
+
+```csharp id="map"
+using System.Security.Claims;
+using YourApp.Security;
+
+public static class UserSnapshotMapper
+{
+    public static ExternalUserSnapshot ToSnapshot(ClaimsPrincipal user)
+    {
+        return new ExternalUserSnapshot
+        {
+            UserName = user.Identity?.Name,
+            IsAdUser = user.Identity?.AuthenticationType == "Negotiate",
+
+            DirectGroups = user.FindAll("groups")
+                .Select(x => x.Value)
+                .ToList()
+        };
+    }
+}
+```
+
+---
+
+# 🧭 9. BLAZOR SAMPLE
+
+```razor id="blazor"
 @inject AuthenticationStateProvider AuthStateProvider
+@inject UserContextBuilder Builder
+
+<h3>My Profile</h3>
+
+@if (user is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <p>Roles:</p>
+    <ul>
+        @foreach (var r in user.Roles)
+        {
+            <li>@r</li>
+        }
+    </ul>
+
+    <p>Groups:</p>
+    <ul>
+        @foreach (var g in user.Groups)
+        {
+            <li>@g</li>
+        }
+    </ul>
+
+    <p>Source: @(user.IsAdUser ? "AD" : "Identity")</p>
+}
 
 @code {
-    private UnifiedUserContext? user;
+    private UserContext? user;
 
     protected override async Task OnInitializedAsync()
     {
-        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
-
-        user = await UserContextBuilder.BuildAsync(authState.User);
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        var snap = UserSnapshotMapper.ToSnapshot(auth.User);
+        user = Builder.Build(snap);
     }
 }
 ```
 
 ---
 
-# 🌐 STEP 8 — API usage (same model)
+# 🌐 10. API SAMPLE
 
-In API controller:
+```csharp id="api"
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using YourApp.Security;
 
-```csharp id="s8"
-[Authorize]
-[HttpGet("/me")]
-public async Task<IActionResult> GetMe(
-    IUserContextBuilder builder)
+[ApiController]
+[Route("api/me")]
+public class MeController : ControllerBase
 {
-    var user = await builder.BuildAsync(User);
+    private readonly UserContextBuilder _builder;
 
-    return Ok(user);
+    public MeController(UserContextBuilder builder)
+    {
+        _builder = builder;
+    }
+
+    [Authorize]
+    [HttpGet]
+    public IActionResult Get()
+    {
+        var snapshot = UserSnapshotMapper.ToSnapshot(User);
+        return Ok(_builder.Build(snapshot));
+    }
 }
 ```
 
-👉 Same object as Blazor
+---
+
+# ⏱ 11. 7-MINUTE TIMEOUT (NON-AD USERS ONLY)
+
+This is enforced in **host layer (Blazor)**:
+
+```csharp id="timeout"
+builder.Services.Configure<CookieAuthenticationOptions>(
+    IdentityConstants.ApplicationScheme,
+    options =>
+    {
+        options.ExpireTimeSpan = TimeSpan.FromMinutes(7);
+        options.SlidingExpiration = true;
+    });
+```
+
+👉 Apply ONLY to Identity cookie scheme
+👉 AD (Windows auth) is NOT affected
 
 ---
 
-# 🧠 STEP 9 — Background services (optional but powerful)
+# 🧠 FINAL RESULT
 
-```csharp id="s9"
-var context = await _userContextBuilder.BuildAsync(principal);
-```
+You now have:
 
-Same identity model everywhere.
+## ✔ Authentication
 
----
+* AD (Windows Auth)
+* Optional Identity login
 
-# 🧭 STEP 10 — What the UI uses
+## ✔ Security engine (pure)
 
-UI NEVER reads claims directly anymore:
+* No ASP.NET dependencies
+* Fully reusable
 
-### ❌ Avoid:
+## ✔ Group-based security
 
-```csharp id="bad1"
-User.FindFirst("department")
-```
+* Nested AD groups supported
+* Role mapping via code
 
-### ✅ Use:
+## ✔ Performance
 
-```csharp id="good1"
-UnifiedUserContext.Department
-```
+* AD caching (7–10 min sliding)
 
----
+## ✔ Unified model
 
-# ⚠️ RULES (important)
+* Blazor + API use same context
 
-### ✔ Always:
+## ✔ Separation
 
-* Build user context via `UserContextBuilder`
-* Use claims only as transport layer
-* Use `UnifiedUserContext` for logic
-
-### ❌ Never:
-
-* Duplicate AD logic in API or Blazor
-* Read raw claims in business logic
-* Rebuild user model in multiple places
+* Security project is completely isolated
 
 ---
 
 # 🧠 FINAL ARCHITECTURE
 
 ```text id="final"
-                ┌──────────────┐
-                │   Blazor     │
-                └──────┬───────┘
-                       │
-                ┌──────▼───────┐
-                │     API      │
-                └──────┬───────┘
-                       │
-        ┌──────────────▼──────────────┐
-        │   Security Project          │
-        │                            │
-        │ - UserContextBuilder       │
-        │ - ClaimsTransformer        │
-        │ - AD Service               │
-        │ - Authorization Policies   │
-        └────────────────────────────┘
+AD / Identity
+     ↓
+Claims (host layer only)
+     ↓
+Snapshot Mapper
+     ↓
+Security Engine (pure .NET)
+     ↓
+UserContext
+     ↓
+Blazor + API + Services
 ```
 
 ---
 
-# ✔️ FINAL RESULT
-
-You now have:
-
-* ✔ One unified user model across ALL apps
-* ✔ Blazor and API consume identical identity structure
-* ✔ AD and Identity fully abstracted away
-* ✔ No duplicated auth logic anywhere
-* ✔ Clean separation of concerns
-* ✔ Future-proof for workers/services
-
----
-
 If you want next step, I can show you:
-👉 how to extend this so **role changes in AD instantly reflect across all running apps without logout or restart (real-time refresh model)**
+👉 how to replace the in-memory group map with **real Active Directory recursive LDAP group traversal (production-grade enterprise version)**
