@@ -453,3 +453,1214 @@ You now have a UI component that:
 
 If you want next step, I can show you:
 👉 how to make this a **global header component that updates automatically when auth state changes (no reload required)**
+
+=============================================
+Good instinct—that “optional improvement” is exactly how you clean this up and avoid rebuilding user context all over the place.
+
+You’re essentially introducing a **single per-request security facade**.
+
+---
+
+# 🧠 WHAT THIS GIVES YOU
+
+✔ One place to evaluate group membership
+✔ No DI lifetime issues
+✔ No duplicate `UserContextBuilder` calls
+✔ Cleaner authorization handlers
+✔ Reusable in API + Blazor
+
+---
+
+# 🧱 STEP 1 — CREATE THE INTERFACE
+
+```csharp id="grp_auth_iface"
+using System.Security.Claims;
+
+namespace YourApp.Security;
+
+public interface IGroupAuthorizer
+{
+    bool IsInGroup(ClaimsPrincipal user, string group);
+    UserContext GetUserContext(ClaimsPrincipal user);
+}
+```
+
+---
+
+# 🧠 STEP 2 — IMPLEMENTATION (WITH PER-REQUEST CACHE)
+
+We cache inside the request using `HttpContext.Items`.
+
+```csharp id="grp_auth_impl"
+using System.Security.Claims;
+using Microsoft.AspNetCore.Http;
+
+namespace YourApp.Security;
+
+public class GroupAuthorizer : IGroupAuthorizer
+{
+    private readonly IHttpContextAccessor _http;
+    private readonly UserContextBuilder _builder;
+
+    private const string CacheKey = "UserContext";
+
+    public GroupAuthorizer(
+        IHttpContextAccessor http,
+        UserContextBuilder builder)
+    {
+        _http = http;
+        _builder = builder;
+    }
+
+    public UserContext GetUserContext(ClaimsPrincipal user)
+    {
+        var ctx = _http.HttpContext;
+
+        if (ctx == null)
+        {
+            // fallback (non-web scenario)
+            var snap = UserSnapshotMapper.Map(user);
+            return _builder.Build(snap);
+        }
+
+        if (ctx.Items.TryGetValue(CacheKey, out var cached))
+            return (UserContext)cached!;
+
+        var snapshot = UserSnapshotMapper.Map(user);
+        var result = _builder.Build(snapshot);
+
+        ctx.Items[CacheKey] = result;
+
+        return result;
+    }
+
+    public bool IsInGroup(ClaimsPrincipal user, string group)
+    {
+        var ctx = GetUserContext(user);
+
+        return ctx.Groups.Any(g =>
+            g.Equals(group, StringComparison.OrdinalIgnoreCase));
+    }
+}
+```
+
+---
+
+# ⚙️ STEP 3 — REGISTER SERVICES
+
+```csharp id="reg_services"
+builder.Services.AddHttpContextAccessor();
+
+builder.Services.AddScoped<IGroupAuthorizer, GroupAuthorizer>();
+builder.Services.AddScoped<UserContextBuilder>();
+```
+
+---
+
+# 🔐 STEP 4 — CLEAN AUTHORIZATION HANDLER
+
+Now your handler becomes very simple:
+
+```csharp id="handler_clean"
+using Microsoft.AspNetCore.Authorization;
+
+namespace YourApp.Security;
+
+public class GroupHandler : AuthorizationHandler<GroupRequirement>
+{
+    private readonly IGroupAuthorizer _auth;
+
+    public GroupHandler(IGroupAuthorizer auth)
+    {
+        _auth = auth;
+    }
+
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        GroupRequirement requirement)
+    {
+        if (_auth.IsInGroup(context.User, requirement.Group))
+        {
+            context.Succeed(requirement);
+        }
+
+        return Task.CompletedTask;
+    }
+}
+```
+
+---
+
+# ⚠️ IMPORTANT: LIFETIME FIX
+
+Now that everything is scoped-safe:
+
+```csharp id="handler_reg"
+builder.Services.AddScoped<IAuthorizationHandler, GroupHandler>();
+```
+
+✔ No more `IServiceScopeFactory` needed
+✔ Much cleaner
+
+---
+
+# 🌐 STEP 5 — USE IN API
+
+```csharp id="api_use"
+[Authorize]
+[HttpGet("/me")]
+public IActionResult Me(IGroupAuthorizer auth)
+{
+    var user = auth.GetUserContext(User);
+    return Ok(user);
+}
+```
+
+---
+
+# 🌐 STEP 6 — USE IN BLAZOR
+
+```razor id="blazor_use"
+@inject AuthenticationStateProvider Auth
+@inject IGroupAuthorizer Authorizer
+
+@if (user == null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <p>@user.UserName</p>
+
+    <ul>
+        @foreach (var g in user.Groups)
+        {
+            <li>@g</li>
+        }
+    </ul>
+}
+
+@code {
+    private UserContext? user;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        user = Authorizer.GetUserContext(state.User);
+    }
+}
+```
+
+---
+
+# 🧠 WHY THIS IS THE BEST VERSION
+
+## ✔ Single source of truth
+
+Everything flows through `IGroupAuthorizer`
+
+## ✔ Per-request caching
+
+`UserContextBuilder` runs **once per request**
+
+## ✔ No lifetime issues
+
+Everything is scoped correctly
+
+## ✔ Clean handler
+
+No DI hacks, no scope factories
+
+## ✔ Works everywhere
+
+* Blazor
+* API
+* future services
+
+---
+
+# 🧠 FINAL ARCHITECTURE
+
+```text id="flow_final"
+ClaimsPrincipal
+      ↓
+IGroupAuthorizer (scoped)
+      ↓
+(UserContext cached in HttpContext.Items)
+      ↓
+Authorization Handler / API / Blazor
+```
+
+---
+
+# ✔️ FINAL TAKEAWAY
+
+> You’ve now built a **proper security façade layer**
+
+Everything else (handlers, UI, APIs) simply asks:
+
+```csharp id="final_q"
+auth.IsInGroup(user, "IT")
+```
+
+---
+
+If you want next step, I can show you:
+👉 how to extend this so **Blazor nav menus automatically hide/show based on group membership without duplicating logic**
+======================================
+
+
+You’re very close—since you already built a **group-based authorization system**, the cleanest way to lock down controllers is to expose it via a **custom attribute**.
+
+This gives you:
+
+> ✔ `[GroupAuthorize("IT")]` on controllers/actions
+> ✔ Uses your existing `IGroupAuthorizer`
+> ✔ Works in API + Blazor endpoints
+> ✔ Clean, reusable, no inline checks
+
+---
+
+# 🧠 APPROACH
+
+We wrap your `GroupRequirement` into an attribute:
+
+```text
+Attribute → Policy → Requirement → Handler → IGroupAuthorizer
+```
+
+---
+
+# 🧱 STEP 1 — CREATE ATTRIBUTE
+
+```csharp id="attr"
+using Microsoft.AspNetCore.Authorization;
+
+namespace YourApp.Security;
+
+public class GroupAuthorizeAttribute : AuthorizeAttribute
+{
+    private const string POLICY_PREFIX = "GROUP_";
+
+    public GroupAuthorizeAttribute(string group)
+    {
+        Policy = POLICY_PREFIX + group;
+    }
+
+    public static string BuildPolicy(string group)
+        => POLICY_PREFIX + group;
+}
+```
+
+---
+
+# 🧠 STEP 2 — DYNAMIC POLICY PROVIDER (IMPORTANT)
+
+Instead of manually registering every group policy, generate them automatically.
+
+```csharp id="policy_provider"
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Options;
+
+namespace YourApp.Security;
+
+public class GroupPolicyProvider : DefaultAuthorizationPolicyProvider
+{
+    private const string PREFIX = "GROUP_";
+
+    public GroupPolicyProvider(IOptions<AuthorizationOptions> options)
+        : base(options)
+    {
+    }
+
+    public override Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
+    {
+        if (policyName.StartsWith(PREFIX))
+        {
+            var group = policyName.Substring(PREFIX.Length);
+
+            var policy = new AuthorizationPolicyBuilder()
+                .AddRequirements(new GroupRequirement(group))
+                .Build();
+
+            return Task.FromResult<AuthorizationPolicy?>(policy);
+        }
+
+        return base.GetPolicyAsync(policyName);
+    }
+}
+```
+
+---
+
+# ⚙️ STEP 3 — REGISTER EVERYTHING
+
+```csharp id="reg"
+builder.Services.AddScoped<IGroupAuthorizer, GroupAuthorizer>();
+builder.Services.AddScoped<UserContextBuilder>();
+
+builder.Services.AddScoped<IAuthorizationHandler, GroupHandler>();
+
+// 🔑 Replace default policy provider
+builder.Services.AddSingleton<IAuthorizationPolicyProvider, GroupPolicyProvider>();
+```
+
+---
+
+# 🌐 STEP 4 — USE ATTRIBUTE ON CONTROLLER
+
+```csharp id="controller"
+using Microsoft.AspNetCore.Mvc;
+using YourApp.Security;
+
+[ApiController]
+[Route("api/admin")]
+[GroupAuthorize("IT")]
+public class AdminController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult Get()
+    {
+        return Ok("Only IT group can access this");
+    }
+}
+```
+
+---
+
+# 🌐 STEP 5 — USE ON ACTION
+
+```csharp id="action"
+[HttpGet("finance")]
+[GroupAuthorize("Finance")]
+public IActionResult Finance()
+{
+    return Ok("Finance only");
+}
+```
+
+---
+
+# 🧠 WHAT HAPPENS AT RUNTIME
+
+```text
+[GroupAuthorize("IT")]
+        ↓
+Policy = "GROUP_IT"
+        ↓
+GroupPolicyProvider creates policy dynamically
+        ↓
+GroupRequirement("IT")
+        ↓
+GroupHandler runs
+        ↓
+IGroupAuthorizer checks resolved groups
+        ↓
+ALLOW / DENY
+```
+
+---
+
+# ✔️ SUPPORTS NESTED GROUPS
+
+Because your handler uses:
+
+```csharp
+UserContextBuilder → GroupResolver
+```
+
+👉 This works automatically:
+
+```text
+User → Developers → IT
+```
+
+✔ `[GroupAuthorize("IT")]` passes
+
+---
+
+# 🧠 OPTIONAL — MULTIPLE GROUPS
+
+If you want:
+
+```csharp
+[GroupAuthorize("IT,Finance")]
+```
+
+Modify attribute:
+
+```csharp id="multi_attr"
+public class GroupAuthorizeAttribute : AuthorizeAttribute
+{
+    public GroupAuthorizeAttribute(string groupsCsv)
+    {
+        Policy = "GROUPS_" + groupsCsv;
+    }
+}
+```
+
+Then parse in policy provider.
+
+---
+
+# 🧠 CLEAN RESULT
+
+You now get:
+
+✔ Attribute-based security
+✔ No manual policy registration
+✔ No duplication
+✔ Centralized logic
+✔ Works in API + Blazor
+
+---
+
+# 🧠 FINAL TAKEAWAY
+
+> Your controllers now declare intent:
+
+```csharp
+[GroupAuthorize("IT")]
+```
+
+And your system handles everything else.
+
+---
+
+If you want next step, I can show you:
+👉 how to make **Blazor nav menus automatically respect `[GroupAuthorize]` attributes without duplicating group checks**
+============================================
+You can make your Blazor nav automatically respect `[GroupAuthorize]` **without duplicating logic** by reusing the same authorization system that protects your endpoints.
+
+The trick is:
+
+> 👉 Ask ASP.NET Core: *“Is this user authorized for this policy?”*
+> instead of manually checking groups again.
+
+---
+
+# 🧠 THE CLEAN APPROACH
+
+```text
+Nav Menu
+   ↓
+IAuthorizationService
+   ↓
+Your existing policies (GroupAuthorize → GroupHandler)
+   ↓
+Allow / Hide menu item
+```
+
+So you **don’t touch groups at all in UI**.
+
+---
+
+# 🧱 STEP 1 — CREATE A REUSABLE NAV COMPONENT
+
+## `AuthorizedNavLink.razor`
+
+```razor
+@using Microsoft.AspNetCore.Authorization
+
+@inject IAuthorizationService AuthorizationService
+@inject AuthenticationStateProvider AuthStateProvider
+
+@if (isAllowed)
+{
+    <li class="nav-item">
+        <NavLink class="nav-link" href="@Href">
+            @ChildContent
+        </NavLink>
+    </li>
+}
+
+@code {
+    [Parameter] public string Href { get; set; } = "";
+    [Parameter] public string Policy { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private bool isAllowed;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+
+        var result = await AuthorizationService.AuthorizeAsync(user, Policy);
+
+        isAllowed = result.Succeeded;
+    }
+}
+```
+
+---
+
+# 🧠 STEP 2 — USE IT IN YOUR NAV MENU
+
+## `NavMenu.razor`
+
+```razor
+<ul class="nav flex-column">
+
+    <AuthorizedNavLink Href="/admin" Policy="GROUP_IT">
+        Admin
+    </AuthorizedNavLink>
+
+    <AuthorizedNavLink Href="/finance" Policy="GROUP_Finance">
+        Finance
+    </AuthorizedNavLink>
+
+</ul>
+```
+
+---
+
+# 🧠 WHY THIS IS PERFECT
+
+✔ Uses same `[GroupAuthorize]` pipeline
+✔ No duplicate group logic
+✔ No direct dependency on groups in UI
+✔ Works with nested groups automatically
+✔ Future-proof (change backend → UI updates automatically)
+
+---
+
+# ⚡ EVEN CLEANER (MATCH ATTRIBUTE SYNTAX)
+
+You don’t want to write `"GROUP_IT"` everywhere.
+
+Reuse your attribute logic:
+
+---
+
+## Update component to accept **group name**
+
+```razor
+@code {
+    [Parameter] public string Group { get; set; } = "";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+
+        var policy = GroupAuthorizeAttribute.BuildPolicy(Group);
+
+        var result = await AuthorizationService.AuthorizeAsync(user, policy);
+
+        isAllowed = result.Succeeded;
+    }
+}
+```
+
+---
+
+## Now usage becomes:
+
+```razor
+<AuthorizedNavLink Href="/admin" Group="IT">
+    Admin
+</AuthorizedNavLink>
+```
+
+---
+
+# 🧠 OPTIONAL — SUPPORT MULTIPLE GROUPS
+
+```razor
+[Parameter] public string[] Groups { get; set; } = [];
+
+var allowed = false;
+
+foreach (var g in Groups)
+{
+    var policy = GroupAuthorizeAttribute.BuildPolicy(g);
+
+    if ((await AuthorizationService.AuthorizeAsync(user, policy)).Succeeded)
+    {
+        allowed = true;
+        break;
+    }
+}
+
+isAllowed = allowed;
+```
+
+---
+
+# 🧠 IMPORTANT (REQUIRED SETUP)
+
+Make sure you already have:
+
+```csharp
+builder.Services.AddAuthorization();
+builder.Services.AddScoped<IAuthorizationHandler, GroupHandler>();
+builder.Services.AddSingleton<IAuthorizationPolicyProvider, GroupPolicyProvider>();
+```
+
+---
+
+# 🧠 BONUS — AUTO-HIDE WHOLE MENU SECTIONS
+
+```razor
+<AuthorizeView Policy="GROUP_IT">
+    <ul>
+        <li><NavLink href="/admin">Admin</NavLink></li>
+        <li><NavLink href="/settings">Settings</NavLink></li>
+    </ul>
+</AuthorizeView>
+```
+
+👉 This works because your **policy provider + handler are global**
+
+---
+
+# 🧠 FINAL RESULT
+
+You now have:
+
+✔ UI automatically respects `[GroupAuthorize]`
+✔ No duplicated logic
+✔ Same rules across API + Blazor
+✔ Centralized security
+✔ Nested group support
+✔ Clean component-based nav
+
+---
+
+# 🧠 FINAL TAKEAWAY
+
+> The UI should never “know” about groups
+> It should only ask: **“Am I authorized?”**
+
+---
+
+If you want next step, I can show you:
+👉 how to **auto-generate the entire nav menu from your page attributes (zero manual menu maintenance)**
+====================================================================================================================================================
+====================================================================================================================================================
+====================================================================================================================================================
+====================================================================================================================================================
+====================================================================================================================================================
+====================================================================================================================================================
+
+
+Alright—here’s a **clean, end-to-end setup** that ties everything together:
+
+* ✔ AD (Windows Auth) + optional login (cookie)
+* ✔ Group-based security (no roles)
+* ✔ Nested group support
+* ✔ Unified user context
+* ✔ Custom `[GroupAuthorize]` attribute
+* ✔ Works in **API + Blazor**
+* ✔ Nav menu automatically respects authorization (no duplicated logic)
+* ✔ Packaged behind a **single extension method**
+
+Everything below is designed so you can **drop it in from scratch**.
+
+---
+
+# 🧱 1. SECURITY PROJECT STRUCTURE
+
+```text
+YourApp.Security
+ ├── Core
+ │    ├── UserContext.cs
+ │    ├── ExternalUserSnapshot.cs
+ │    ├── GroupResolver.cs
+ │    ├── UserContextBuilder.cs
+ │
+ ├── AspNet
+ │    ├── GroupAuthorizeAttribute.cs
+ │    ├── GroupRequirement.cs
+ │    ├── GroupHandler.cs
+ │    ├── GroupPolicyProvider.cs
+ │    ├── GroupAuthorizer.cs
+ │    ├── UserSnapshotMapper.cs
+ │    ├── SecurityExtensions.cs
+```
+
+---
+
+# 📦 2. SECURITY PROJECT PACKAGES
+
+```xml
+<ItemGroup>
+  <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.0.0" />
+  <PackageReference Include="Microsoft.AspNetCore.Authentication.Cookies" Version="10.0.0" />
+  <PackageReference Include="Microsoft.AspNetCore.Authorization" Version="10.0.0" />
+  <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.0" />
+  <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+</ItemGroup>
+```
+
+---
+
+# 🧠 3. CORE (NO ASP.NET DEPENDENCIES)
+
+## UserContext
+
+```csharp
+namespace YourApp.Security;
+
+public class UserContext
+{
+    public string? UserName { get; set; }
+    public bool IsAdUser { get; set; }
+    public List<string> Groups { get; set; } = new();
+}
+```
+
+---
+
+## ExternalUserSnapshot
+
+```csharp
+namespace YourApp.Security;
+
+public class ExternalUserSnapshot
+{
+    public string? UserName { get; set; }
+    public bool IsAdUser { get; set; }
+    public List<string> DirectGroups { get; set; } = new();
+}
+```
+
+---
+
+## GroupResolver (nested groups)
+
+```csharp
+namespace YourApp.Security;
+
+public interface IGroupResolver
+{
+    List<string> Expand(List<string> directGroups);
+}
+
+public class GroupResolver : IGroupResolver
+{
+    private readonly IDictionary<string, List<string>> _map;
+
+    public GroupResolver(IDictionary<string, List<string>> map)
+    {
+        _map = map;
+    }
+
+    public List<string> Expand(List<string> directGroups)
+    {
+        var result = new HashSet<string>();
+        var visited = new HashSet<string>();
+
+        foreach (var g in directGroups)
+            Resolve(g, result, visited);
+
+        return result.ToList();
+    }
+
+    private void Resolve(string g, HashSet<string> result, HashSet<string> visited)
+    {
+        if (!visited.Add(g)) return;
+
+        result.Add(g);
+
+        if (_map.TryGetValue(g, out var children))
+        {
+            foreach (var c in children)
+                Resolve(c, result, visited);
+        }
+    }
+}
+```
+
+---
+
+## UserContextBuilder
+
+```csharp
+namespace YourApp.Security;
+
+public class UserContextBuilder
+{
+    private readonly IGroupResolver _resolver;
+
+    public UserContextBuilder(IGroupResolver resolver)
+    {
+        _resolver = resolver;
+    }
+
+    public UserContext Build(ExternalUserSnapshot input)
+    {
+        return new UserContext
+        {
+            UserName = input.UserName,
+            IsAdUser = input.IsAdUser,
+            Groups = _resolver.Expand(input.DirectGroups)
+        };
+    }
+}
+```
+
+---
+
+# 🌐 4. ASP.NET LAYER
+
+## Snapshot Mapper
+
+```csharp
+using System.Security.Claims;
+
+namespace YourApp.Security;
+
+public static class UserSnapshotMapper
+{
+    public static ExternalUserSnapshot Map(ClaimsPrincipal user)
+    {
+        return new ExternalUserSnapshot
+        {
+            UserName = user.Identity?.Name,
+            IsAdUser = user.Identity?.AuthenticationType == "Negotiate",
+            DirectGroups = user.FindAll("groups").Select(x => x.Value).ToList()
+        };
+    }
+}
+```
+
+---
+
+# 🔐 GROUP AUTHORIZATION SYSTEM
+
+## GroupRequirement
+
+```csharp
+using Microsoft.AspNetCore.Authorization;
+
+namespace YourApp.Security;
+
+public class GroupRequirement : IAuthorizationRequirement
+{
+    public string Group { get; }
+
+    public GroupRequirement(string group)
+    {
+        Group = group;
+    }
+}
+```
+
+---
+
+## GroupAuthorizeAttribute
+
+```csharp
+using Microsoft.AspNetCore.Authorization;
+
+namespace YourApp.Security;
+
+public class GroupAuthorizeAttribute : AuthorizeAttribute
+{
+    private const string PREFIX = "GROUP_";
+
+    public GroupAuthorizeAttribute(string group)
+    {
+        Policy = PREFIX + group;
+    }
+
+    public static string Build(string group) => PREFIX + group;
+}
+```
+
+---
+
+## GroupPolicyProvider
+
+```csharp
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.Extensions.Options;
+
+namespace YourApp.Security;
+
+public class GroupPolicyProvider : DefaultAuthorizationPolicyProvider
+{
+    private const string PREFIX = "GROUP_";
+
+    public GroupPolicyProvider(IOptions<AuthorizationOptions> options)
+        : base(options) { }
+
+    public override Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
+    {
+        if (policyName.StartsWith(PREFIX))
+        {
+            var group = policyName.Substring(PREFIX.Length);
+
+            var policy = new AuthorizationPolicyBuilder()
+                .AddRequirements(new GroupRequirement(group))
+                .Build();
+
+            return Task.FromResult<AuthorizationPolicy?>(policy);
+        }
+
+        return base.GetPolicyAsync(policyName);
+    }
+}
+```
+
+---
+
+# 🧠 GROUP AUTHORIZER (SHARED + CACHED)
+
+```csharp
+using System.Security.Claims;
+using Microsoft.AspNetCore.Http;
+
+namespace YourApp.Security;
+
+public interface IGroupAuthorizer
+{
+    bool IsInGroup(ClaimsPrincipal user, string group);
+    UserContext GetUserContext(ClaimsPrincipal user);
+}
+
+public class GroupAuthorizer : IGroupAuthorizer
+{
+    private readonly IHttpContextAccessor _http;
+    private readonly UserContextBuilder _builder;
+
+    private const string KEY = "UserContext";
+
+    public GroupAuthorizer(IHttpContextAccessor http, UserContextBuilder builder)
+    {
+        _http = http;
+        _builder = builder;
+    }
+
+    public UserContext GetUserContext(ClaimsPrincipal user)
+    {
+        var ctx = _http.HttpContext;
+
+        if (ctx == null)
+            return _builder.Build(UserSnapshotMapper.Map(user));
+
+        if (ctx.Items.TryGetValue(KEY, out var cached))
+            return (UserContext)cached!;
+
+        var result = _builder.Build(UserSnapshotMapper.Map(user));
+        ctx.Items[KEY] = result;
+
+        return result;
+    }
+
+    public bool IsInGroup(ClaimsPrincipal user, string group)
+    {
+        return GetUserContext(user).Groups
+            .Any(g => g.Equals(group, StringComparison.OrdinalIgnoreCase));
+    }
+}
+```
+
+---
+
+## GroupHandler
+
+```csharp
+using Microsoft.AspNetCore.Authorization;
+
+namespace YourApp.Security;
+
+public class GroupHandler : AuthorizationHandler<GroupRequirement>
+{
+    private readonly IGroupAuthorizer _auth;
+
+    public GroupHandler(IGroupAuthorizer auth)
+    {
+        _auth = auth;
+    }
+
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        GroupRequirement requirement)
+    {
+        if (_auth.IsInGroup(context.User, requirement.Group))
+            context.Succeed(requirement);
+
+        return Task.CompletedTask;
+    }
+}
+```
+
+---
+
+# ⚙️ EXTENSION METHOD (MAIN ENTRY POINT)
+
+```csharp
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.AspNetCore.Authorization;
+
+namespace YourApp.Security;
+
+public static class SecurityExtensions
+{
+    public static IServiceCollection AddAppSecurity(this IServiceCollection services)
+    {
+        // AUTH
+        services.AddAuthentication("Hybrid")
+            .AddPolicyScheme("Hybrid", "Hybrid", options =>
+            {
+                options.ForwardDefaultSelector = ctx =>
+                {
+                    if (ctx.User?.Identity?.AuthenticationType == "Negotiate")
+                        return NegotiateDefaults.AuthenticationScheme;
+
+                    return "AppCookie";
+                };
+            })
+            .AddNegotiate()
+            .AddCookie("AppCookie", o =>
+            {
+                o.ExpireTimeSpan = TimeSpan.FromMinutes(7);
+                o.SlidingExpiration = true;
+            });
+
+        services.AddAuthorization();
+
+        // CORE
+        var groupMap = new Dictionary<string, List<string>>
+        {
+            ["IT"] = new() { "Developers" },
+            ["Developers"] = new() { "Backend" }
+        };
+
+        services.AddSingleton<IGroupResolver>(new GroupResolver(groupMap));
+        services.AddScoped<UserContextBuilder>();
+
+        // AUTHZ
+        services.AddHttpContextAccessor();
+        services.AddScoped<IGroupAuthorizer, GroupAuthorizer>();
+        services.AddScoped<IAuthorizationHandler, GroupHandler>();
+        services.AddSingleton<IAuthorizationPolicyProvider, GroupPolicyProvider>();
+
+        return services;
+    }
+}
+```
+
+---
+
+# 🌐 5. API USAGE
+
+```csharp
+builder.Services.AddAppSecurity();
+
+app.UseAuthentication();
+app.UseAuthorization();
+```
+
+```csharp
+[ApiController]
+[Route("api/admin")]
+[GroupAuthorize("IT")]
+public class AdminController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult Get() => Ok("Allowed");
+}
+```
+
+---
+
+# 🌐 6. BLAZOR SETUP
+
+## App.razor
+
+```razor
+<CascadingAuthenticationState>
+    <Router AppAssembly="@typeof(Program).Assembly" />
+</CascadingAuthenticationState>
+```
+
+---
+
+# 🧭 NAV MENU (AUTO AUTHORIZED)
+
+## AuthorizedNavLink.razor
+
+```razor
+@using Microsoft.AspNetCore.Authorization
+@inject IAuthorizationService AuthService
+@inject AuthenticationStateProvider AuthStateProvider
+
+@if (allowed)
+{
+    <li>
+        <NavLink href="@Href">@ChildContent</NavLink>
+    </li>
+}
+
+@code {
+    [Parameter] public string Href { get; set; } = "";
+    [Parameter] public string Group { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    bool allowed;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var state = await AuthStateProvider.GetAuthenticationStateAsync();
+        var policy = GroupAuthorizeAttribute.Build(Group);
+
+        var result = await AuthService.AuthorizeAsync(state.User, policy);
+
+        allowed = result.Succeeded;
+    }
+}
+```
+
+---
+
+## NavMenu.razor
+
+```razor
+<ul>
+
+    <AuthorizedNavLink Href="/admin" Group="IT">
+        Admin
+    </AuthorizedNavLink>
+
+    <AuthorizedNavLink Href="/dev" Group="Developers">
+        Dev Area
+    </AuthorizedNavLink>
+
+</ul>
+```
+
+---
+
+# 🧠 FINAL RESULT
+
+You now have:
+
+✔ Attribute-based security
+✔ Group-only authorization
+✔ Nested groups
+✔ Shared logic (API + Blazor)
+✔ No duplication in UI
+✔ Per-request caching
+✔ Clean DI usage
+✔ One-line setup
+
+---
+
+# 🧠 FINAL TAKEAWAY
+
+> Your UI, API, and authorization all rely on the same pipeline:
+
+```text
+Claims → Snapshot → UserContext → GroupAuthorizer → Policy → UI/API
+```
+
+---
+
+If you want next step, I can show you:
+👉 how to plug in **real Active Directory (LDAP) with automatic nested group resolution + caching (production-ready)**
