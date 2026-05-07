@@ -1,93 +1,43 @@
-{
-  "Polly": {
-    "RetryCount": 3,
-    "RetryBaseDelayMs": 200,
-    "TimeoutSeconds": 10
-  }
-}
-
-==============================
-namespace MyApp;
-
-public sealed class PollySettings
-{
-    public int RetryCount { get; set; } = 3;
-    public int RetryBaseDelayMs { get; set; } = 200;
-    public int TimeoutSeconds { get; set; } = 10;
-}
-===============================
-using System.Net;
 using System.Net.Http.Json;
-using Microsoft.Extensions.Options;
-using Polly;
-using Polly.Retry;
-using Polly.Timeout;
 
 namespace MyApp;
 
-public interface IMyClass
+public class MyClass(IHttpClientFactory httpClientFactory) : IMyClass
 {
-    Task<string?> GetFooAsync(CancellationToken cancellationToken = default);
-    Task<string?> GetBarAsync(CancellationToken cancellationToken = default);
-
-    Task<string?> PostFooAsync(object payload, CancellationToken cancellationToken = default);
-    Task<TResponse?> PostBarAsync<TRequest, TResponse>(TRequest payload, CancellationToken cancellationToken = default);
-
-    Task<string?> PutAsync(string url, object payload, CancellationToken cancellationToken = default);
-    Task<TResponse?> PutAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken = default);
-
-    Task<string?> PatchAsync(string url, object payload, CancellationToken cancellationToken = default);
-    Task<TResponse?> PatchAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken = default);
-
-    Task<bool> DeleteAsync(string url, CancellationToken cancellationToken = default);
-}
-
-public class MyClass : IMyClass
-{
-    private readonly HttpClient _httpClient;
-    private readonly ResiliencePipeline<HttpResponseMessage> _pipeline;
-
-    public MyClass(IHttpClientFactory httpClientFactory, IOptions<PollySettings> settings)
-    {
-        _httpClient = httpClientFactory.CreateClient("Hello");
-        _pipeline = BuildPipeline(settings.Value);
-    }
-
-    // ---------------- PUBLIC API ----------------
+    private readonly HttpClient _httpClient = httpClientFactory.CreateClient("MyClient");
 
     public Task<string?> GetFooAsync(CancellationToken cancellationToken = default)
-        => GetResultAsStringAsync("Foo", cancellationToken);
+        => GetResultAsString("Foo", cancellationToken);
 
     public Task<string?> GetBarAsync(CancellationToken cancellationToken = default)
         => GetResultAsync<string>("Bar", cancellationToken);
 
     public Task<string?> PostFooAsync(object payload, CancellationToken cancellationToken = default)
-        => PostResultAsStringAsync("Foo", payload, cancellationToken);
+        => PostResultAsString("Foo", payload, cancellationToken);
 
     public Task<TResponse?> PostBarAsync<TRequest, TResponse>(TRequest payload, CancellationToken cancellationToken = default)
         => PostResultAsync<TRequest, TResponse>("Bar", payload, cancellationToken);
 
     public Task<string?> PutAsync(string url, object payload, CancellationToken cancellationToken = default)
-        => PutResultAsStringAsync(url, payload, cancellationToken);
+        => PutResultAsString(url, payload, cancellationToken);
 
     public Task<TResponse?> PutAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken = default)
         => PutResultAsync<TRequest, TResponse>(url, payload, cancellationToken);
 
     public Task<string?> PatchAsync(string url, object payload, CancellationToken cancellationToken = default)
-        => PatchResultAsStringAsync(url, payload, cancellationToken);
+        => PatchResultAsString(url, payload, cancellationToken);
 
     public Task<TResponse?> PatchAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken = default)
         => PatchResultAsync<TRequest, TResponse>(url, payload, cancellationToken);
 
     public Task<bool> DeleteAsync(string url, CancellationToken cancellationToken = default)
-        => DeleteResultAsync(url, cancellationToken);
+        => DeleteResult(url, cancellationToken);
 
     // ---------------- GET ----------------
 
-    private async Task<string?> GetResultAsStringAsync(string url, CancellationToken cancellationToken)
+    private async Task<string?> GetResultAsString(string url, CancellationToken cancellationToken)
     {
-        var response = await ExecuteAsync(ct => _httpClient.GetAsync(url, ct), cancellationToken);
-
+        var response = await _httpClient.GetAsync(url, cancellationToken);
         if (!response.IsSuccessStatusCode)
             return null;
 
@@ -96,8 +46,7 @@ public class MyClass : IMyClass
 
     private async Task<T?> GetResultAsync<T>(string url, CancellationToken cancellationToken)
     {
-        var response = await ExecuteAsync(ct => _httpClient.GetAsync(url, ct), cancellationToken);
-
+        var response = await _httpClient.GetAsync(url, cancellationToken);
         if (!response.IsSuccessStatusCode)
             return default;
 
@@ -106,10 +55,9 @@ public class MyClass : IMyClass
 
     // ---------------- POST ----------------
 
-    private async Task<string?> PostResultAsStringAsync(string url, object payload, CancellationToken cancellationToken)
+    private async Task<string?> PostResultAsString(string url, object payload, CancellationToken cancellationToken)
     {
-        var response = await ExecuteAsync(ct => _httpClient.PostAsJsonAsync(url, payload, ct), cancellationToken);
-
+        var response = await _httpClient.PostAsJsonAsync(url, payload, cancellationToken);
         if (!response.IsSuccessStatusCode)
             return null;
 
@@ -118,8 +66,7 @@ public class MyClass : IMyClass
 
     private async Task<TResponse?> PostResultAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken)
     {
-        var response = await ExecuteAsync(ct => _httpClient.PostAsJsonAsync(url, payload, ct), cancellationToken);
-
+        var response = await _httpClient.PostAsJsonAsync(url, payload, cancellationToken);
         if (!response.IsSuccessStatusCode)
             return default;
 
@@ -128,10 +75,9 @@ public class MyClass : IMyClass
 
     // ---------------- PUT ----------------
 
-    private async Task<string?> PutResultAsStringAsync(string url, object payload, CancellationToken cancellationToken)
+    private async Task<string?> PutResultAsString(string url, object payload, CancellationToken cancellationToken)
     {
-        var response = await ExecuteAsync(ct => _httpClient.PutAsJsonAsync(url, payload, ct), cancellationToken);
-
+        var response = await _httpClient.PutAsJsonAsync(url, payload, cancellationToken);
         if (!response.IsSuccessStatusCode)
             return null;
 
@@ -140,8 +86,7 @@ public class MyClass : IMyClass
 
     private async Task<TResponse?> PutResultAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken)
     {
-        var response = await ExecuteAsync(ct => _httpClient.PutAsJsonAsync(url, payload, ct), cancellationToken);
-
+        var response = await _httpClient.PutAsJsonAsync(url, payload, cancellationToken);
         if (!response.IsSuccessStatusCode)
             return default;
 
@@ -150,19 +95,14 @@ public class MyClass : IMyClass
 
     // ---------------- PATCH ----------------
 
-    private async Task<string?> PatchResultAsStringAsync(string url, object payload, CancellationToken cancellationToken)
+    private async Task<string?> PatchResultAsString(string url, object payload, CancellationToken cancellationToken)
     {
-        var response = await ExecuteAsync(
-            async ct =>
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Patch, url)
-                {
-                    Content = JsonContent.Create(payload)
-                };
-                return await _httpClient.SendAsync(request, ct);
-            },
-            cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Patch, url)
+        {
+            Content = JsonContent.Create(payload)
+        };
 
+        var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
             return null;
 
@@ -171,17 +111,12 @@ public class MyClass : IMyClass
 
     private async Task<TResponse?> PatchResultAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken)
     {
-        var response = await ExecuteAsync(
-            async ct =>
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Patch, url)
-                {
-                    Content = JsonContent.Create(payload)
-                };
-                return await _httpClient.SendAsync(request, ct);
-            },
-            cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Patch, url)
+        {
+            Content = JsonContent.Create(payload)
+        };
 
+        var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
             return default;
 
@@ -190,91 +125,17 @@ public class MyClass : IMyClass
 
     // ---------------- DELETE ----------------
 
-    private async Task<bool> DeleteResultAsync(string url, CancellationToken cancellationToken)
+    private async Task<bool> DeleteResult(string url, CancellationToken cancellationToken)
     {
-        var response = await ExecuteAsync(ct => _httpClient.DeleteAsync(url, ct), cancellationToken);
+        var response = await _httpClient.DeleteAsync(url, cancellationToken);
         return response.IsSuccessStatusCode;
     }
-
-    // ---------------- PIPELINE EXECUTION ----------------
-
-    private Task<HttpResponseMessage> ExecuteAsync(
-        Func<CancellationToken, Task<HttpResponseMessage>> action,
-        CancellationToken cancellationToken)
-        => _pipeline.ExecuteAsync(
-            static async (context, ct) =>
-            {
-                var func = context.GetValue<Func<CancellationToken, Task<HttpResponseMessage>>>("action");
-                return await func(ct);
-            },
-            new ResilienceContext
-            {
-                CancellationToken = cancellationToken
-            }.WithValue("action", action));
-
-    // ---------------- PIPELINE DEFINITION ----------------
-
-    private static ResiliencePipeline<HttpResponseMessage> BuildPipeline(PollySettings settings)
-    {
-        var retryOptions = new RetryStrategyOptions<HttpResponseMessage>
-        {
-            MaxRetryAttempts = settings.RetryCount,
-            Delay = TimeSpan.FromMilliseconds(settings.RetryBaseDelayMs),
-            BackoffType = DelayBackoffType.Exponential,
-            UseJitter = true,
-            ShouldHandle = args =>
-            {
-                var outcome = args.Outcome;
-
-                if (outcome.Exception is HttpRequestException)
-                    return ValueTask.FromResult(true);
-
-                if (outcome.Exception is TaskCanceledException &&
-                    !args.Context.CancellationToken.IsCancellationRequested)
-                    return ValueTask.FromResult(true);
-
-                if (outcome.Result is { } response && IsTransientStatus(response.StatusCode))
-                    return ValueTask.FromResult(true);
-
-                return ValueTask.FromResult(false);
-            }
-        };
-
-        var timeoutOptions = new TimeoutStrategyOptions<HttpResponseMessage>
-        {
-            Timeout = TimeSpan.FromSeconds(settings.TimeoutSeconds)
-        };
-
-        return new ResiliencePipelineBuilder<HttpResponseMessage>()
-            .AddTimeout(timeoutOptions)
-            .AddRetry(retryOptions)
-            .Build();
-    }
-
-    private static bool IsTransientStatus(HttpStatusCode statusCode)
-        => statusCode is HttpStatusCode.RequestTimeout      // 408 - request timed out
-        or (HttpStatusCode)429                              // 429 - too many requests (rate limited)
-        or HttpStatusCode.InternalServerError               // 500 - server error
-        or HttpStatusCode.BadGateway                        // 502 - bad gateway
-        or HttpStatusCode.ServiceUnavailable                // 503 - service unavailable
-        or HttpStatusCode.GatewayTimeout;                   // 504 - upstream gateway timeout
 }
-
-file static class ResilienceContextExtensions
-{
-    public static ResilienceContext WithValue<T>(this ResilienceContext context, string key, T value)
-    {
-        context.Properties.Set(new ResiliencePropertyKey<T>(key), value);
-        return context;
-    }
-
-    public static T GetValue<T>(this ResilienceContext context, string key)
-        => context.Properties.GetValue(new ResiliencePropertyKey<T>(key));
-}
-==========================
+===========================
 
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Moq;
 using Polly.Timeout;
@@ -369,6 +230,7 @@ public class MyClassTests
                 Content = JsonContent.Create(new TestDto("ok"))
             });
         });
+
         var sut = CreateSut(handler);
 
         // Act
@@ -525,6 +387,7 @@ public class MyClassTests
                 Content = new StringContent("ok")
             });
         });
+
         var sut = CreateSut(handler);
 
         // Act
@@ -545,6 +408,7 @@ public class MyClassTests
             calls++;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest));
         });
+
         var sut = CreateSut(handler);
 
         // Act
@@ -571,6 +435,7 @@ public class MyClassTests
                 Content = new StringContent("late")
             };
         });
+
         var sut = CreateSut(handler);
 
         // Act
@@ -592,6 +457,7 @@ public class MyClassTests
                 Content = new StringContent("never")
             };
         });
+
         var sut = CreateSut(handler);
         using var cts = new CancellationTokenSource();
         cts.CancelAfter(TimeSpan.FromMilliseconds(50));
@@ -609,17 +475,26 @@ public class MyClassTests
 
     private static MyClass CreateSut(HttpMessageHandler handler)
     {
-        var client = new HttpClient(handler)
+        var services = new ServiceCollection();
+
+        // Register Polly settings
+        services.Configure<PollySettings>(opts =>
         {
-            BaseAddress = new Uri("https://example.com/")
-        };
+            opts.RetryCount = DefaultSettings.RetryCount;
+            opts.RetryBaseDelayMs = DefaultSettings.RetryBaseDelayMs;
+            opts.TimeoutSeconds = DefaultSettings.TimeoutSeconds;
+        });
 
-        var factory = new Mock<IHttpClientFactory>();
-        factory.Setup(f => f.CreateClient("Hello")).Returns(client);
+        // Register HttpClient with handler
+        services.AddHttpClient("MyClient")
+            .ConfigurePrimaryHttpMessageHandler(() => handler);
 
-        var options = Options.Create(DefaultSettings);
+        // Register MyClass
+        services.AddTransient<IMyClass, MyClass>();
 
-        return new MyClass(factory.Object, options);
+        var provider = services.BuildServiceProvider();
+
+        return provider.GetRequiredService<IMyClass>();
     }
 
     private sealed class FakeHandler : HttpMessageHandler
@@ -637,47 +512,3 @@ public class MyClassTests
 
     private readonly record struct TestDto(string Value);
 }
-===========================================
-using Microsoft.Extensions.Options;
-using MyApp;
-
-var builder = WebApplication.CreateBuilder(args);
-
-// ---------------------------------------------------------
-// Bind Polly settings from appsettings.json
-// ---------------------------------------------------------
-builder.Services.Configure<PollySettings>(
-    builder.Configuration.GetSection("Polly"));
-
-// ---------------------------------------------------------
-// Register HttpClient used by MyClass
-// ---------------------------------------------------------
-builder.Services.AddHttpClient("Hello", client =>
-{
-    client.BaseAddress = new Uri("https://example.com/");
-});
-
-// ---------------------------------------------------------
-// Register MyClass as a typed service
-// ---------------------------------------------------------
-builder.Services.AddTransient<IMyClass, MyClass>();
-
-var app = builder.Build();
-
-// ---------------------------------------------------------
-// Minimal API demo endpoints (optional)
-// ---------------------------------------------------------
-
-app.MapGet("/foo", async (IMyClass svc) =>
-{
-    var result = await svc.GetFooAsync();
-    return Results.Ok(result);
-});
-
-app.MapPost("/bar", async (IMyClass svc) =>
-{
-    var result = await svc.PostBarAsync<object, object>(new { Name = "PingPong" });
-    return Results.Ok(result);
-});
-
-app.Run();
