@@ -139,6 +139,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Moq;
 using Polly.Timeout;
+using Shouldly;
 using Xunit;
 
 namespace MyApp.Tests;
@@ -171,7 +172,7 @@ public class MyClassTests
         var result = await sut.GetFooAsync();
 
         // Assert
-        Assert.Equal("hello", result);
+        result.ShouldBe("hello");
     }
 
     [Fact]
@@ -192,7 +193,7 @@ public class MyClassTests
         var result = await sut.GetBarAsync();
 
         // Assert
-        Assert.Equal("value", result);
+        result.ShouldBe("value");
     }
 
     // ---------------------------------------------------------
@@ -211,7 +212,7 @@ public class MyClassTests
         var result = await sut.PostFooAsync(new { Name = "PingPong" });
 
         // Assert
-        Assert.Null(result);
+        result.ShouldBeNull();
     }
 
     [Fact]
@@ -237,8 +238,8 @@ public class MyClassTests
         var result = await sut.PostBarAsync<object, TestDto>(new { Name = "PingPong" });
 
         // Assert
-        Assert.Equal("ok", result!.Value);
-        Assert.Equal(2, calls);
+        result!.Value.ShouldBe("ok");
+        calls.ShouldBe(2);
     }
 
     // ---------------------------------------------------------
@@ -260,7 +261,7 @@ public class MyClassTests
         var result = await sut.PutAsync("any", new { });
 
         // Assert
-        Assert.Equal("updated", result);
+        result.ShouldBe("updated");
     }
 
     [Fact]
@@ -281,7 +282,7 @@ public class MyClassTests
         var result = await sut.PutAsync<object, TestDto>("any", new { });
 
         // Assert
-        Assert.Equal("put", result!.Value);
+        result!.Value.ShouldBe("put");
     }
 
     // ---------------------------------------------------------
@@ -294,7 +295,7 @@ public class MyClassTests
         // Arrange
         var handler = new FakeHandler((request, _) =>
         {
-            Assert.Equal(HttpMethod.Patch, request.Method);
+            request.Method.ShouldBe(HttpMethod.Patch);
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -307,7 +308,7 @@ public class MyClassTests
         var result = await sut.PatchAsync("any", new { });
 
         // Assert
-        Assert.Equal("patched", result);
+        result.ShouldBe("patched");
     }
 
     [Fact]
@@ -316,7 +317,7 @@ public class MyClassTests
         // Arrange
         var handler = new FakeHandler((request, _) =>
         {
-            Assert.Equal(HttpMethod.Patch, request.Method);
+            request.Method.ShouldBe(HttpMethod.Patch);
 
             var response = new HttpResponseMessage(HttpStatusCode.OK)
             {
@@ -330,7 +331,7 @@ public class MyClassTests
         var result = await sut.PatchAsync<object, TestDto>("any", new { });
 
         // Assert
-        Assert.Equal("patched-generic", result!.Value);
+        result!.Value.ShouldBe("patched-generic");
     }
 
     // ---------------------------------------------------------
@@ -349,7 +350,7 @@ public class MyClassTests
         var result = await sut.DeleteAsync("any");
 
         // Assert
-        Assert.True(result);
+        result.ShouldBeTrue();
     }
 
     [Fact]
@@ -364,7 +365,7 @@ public class MyClassTests
         var result = await sut.DeleteAsync("any");
 
         // Assert
-        Assert.False(result);
+        result.ShouldBeFalse();
     }
 
     // ---------------------------------------------------------
@@ -394,8 +395,8 @@ public class MyClassTests
         var result = await sut.GetFooAsync();
 
         // Assert
-        Assert.Equal("ok", result);
-        Assert.Equal(2, calls);
+        result.ShouldBe("ok");
+        calls.ShouldBe(2);
     }
 
     [Fact]
@@ -415,8 +416,8 @@ public class MyClassTests
         var result = await sut.GetFooAsync();
 
         // Assert
-        Assert.Null(result);
-        Assert.Equal(1, calls);
+        result.ShouldBeNull();
+        calls.ShouldBe(1);
     }
 
     // ---------------------------------------------------------
@@ -442,7 +443,7 @@ public class MyClassTests
         var act = () => sut.GetFooAsync();
 
         // Assert
-        await Assert.ThrowsAsync<TimeoutRejectedException>(async () => await act());
+        await act.ShouldThrowAsync<TimeoutRejectedException>();
     }
 
     [Fact]
@@ -466,7 +467,7 @@ public class MyClassTests
         var act = () => sut.GetFooAsync(cts.Token);
 
         // Assert
-        await Assert.ThrowsAsync<TaskCanceledException>(async () => await act());
+        await act.ShouldThrowAsync<TaskCanceledException>();
     }
 
     // ---------------------------------------------------------
