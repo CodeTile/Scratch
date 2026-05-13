@@ -1,515 +1,292 @@
-using System.Net.Http.Json;
+Move the resilience values into configuration and bind them to strongly typed options. This keeps your policies adjustable without recompiling and is the standard ASP.NET Core approach.
 
-namespace MyApp;
+---
 
-public class MyClass(IHttpClientFactory httpClientFactory) : IMyClass
+# ✅ 1. Add settings to `appsettings.json`
+
+```json id="s5nx91"
 {
-    private readonly HttpClient _httpClient = httpClientFactory.CreateClient("MyClient");
+  "API": {
+    "root": "https://localhost:5001/"
+  },
 
-    public Task<string?> GetFooAsync(CancellationToken cancellationToken = default)
-        => GetResultAsString("Foo", cancellationToken);
+  "Resilience": {
+    "TimeoutSeconds": 10,
 
-    public Task<string?> GetBarAsync(CancellationToken cancellationToken = default)
-        => GetResultAsync<string>("Bar", cancellationToken);
+    "Retry": {
+      "MaxAttempts": 3,
+      "DelaySeconds": 1
+    },
 
-    public Task<string?> PostFooAsync(object payload, CancellationToken cancellationToken = default)
-        => PostResultAsString("Foo", payload, cancellationToken);
-
-    public Task<TResponse?> PostBarAsync<TRequest, TResponse>(TRequest payload, CancellationToken cancellationToken = default)
-        => PostResultAsync<TRequest, TResponse>("Bar", payload, cancellationToken);
-
-    public Task<string?> PutAsync(string url, object payload, CancellationToken cancellationToken = default)
-        => PutResultAsString(url, payload, cancellationToken);
-
-    public Task<TResponse?> PutAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken = default)
-        => PutResultAsync<TRequest, TResponse>(url, payload, cancellationToken);
-
-    public Task<string?> PatchAsync(string url, object payload, CancellationToken cancellationToken = default)
-        => PatchResultAsString(url, payload, cancellationToken);
-
-    public Task<TResponse?> PatchAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken = default)
-        => PatchResultAsync<TRequest, TResponse>(url, payload, cancellationToken);
-
-    public Task<bool> DeleteAsync(string url, CancellationToken cancellationToken = default)
-        => DeleteResult(url, cancellationToken);
-
-    // ---------------- GET ----------------
-
-    private async Task<string?> GetResultAsString(string url, CancellationToken cancellationToken)
-    {
-        var response = await _httpClient.GetAsync(url, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            return null;
-
-        return await response.Content.ReadAsStringAsync(cancellationToken);
+    "CircuitBreaker": {
+      "FailureRatio": 0.5,
+      "MinimumThroughput": 10,
+      "SamplingDurationSeconds": 30,
+      "BreakDurationSeconds": 15
     }
-
-    private async Task<T?> GetResultAsync<T>(string url, CancellationToken cancellationToken)
-    {
-        var response = await _httpClient.GetAsync(url, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            return default;
-
-        return await response.Content.ReadFromJsonAsync<T>(cancellationToken: cancellationToken);
-    }
-
-    // ---------------- POST ----------------
-
-    private async Task<string?> PostResultAsString(string url, object payload, CancellationToken cancellationToken)
-    {
-        var response = await _httpClient.PostAsJsonAsync(url, payload, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            return null;
-
-        return await response.Content.ReadAsStringAsync(cancellationToken);
-    }
-
-    private async Task<TResponse?> PostResultAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken)
-    {
-        var response = await _httpClient.PostAsJsonAsync(url, payload, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            return default;
-
-        return await response.Content.ReadFromJsonAsync<TResponse>(cancellationToken: cancellationToken);
-    }
-
-    // ---------------- PUT ----------------
-
-    private async Task<string?> PutResultAsString(string url, object payload, CancellationToken cancellationToken)
-    {
-        var response = await _httpClient.PutAsJsonAsync(url, payload, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            return null;
-
-        return await response.Content.ReadAsStringAsync(cancellationToken);
-    }
-
-    private async Task<TResponse?> PutResultAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken)
-    {
-        var response = await _httpClient.PutAsJsonAsync(url, payload, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            return default;
-
-        return await response.Content.ReadFromJsonAsync<TResponse>(cancellationToken: cancellationToken);
-    }
-
-    // ---------------- PATCH ----------------
-
-    private async Task<string?> PatchResultAsString(string url, object payload, CancellationToken cancellationToken)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Patch, url)
-        {
-            Content = JsonContent.Create(payload)
-        };
-
-        var response = await _httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            return null;
-
-        return await response.Content.ReadAsStringAsync(cancellationToken);
-    }
-
-    private async Task<TResponse?> PatchResultAsync<TRequest, TResponse>(string url, TRequest payload, CancellationToken cancellationToken)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Patch, url)
-        {
-            Content = JsonContent.Create(payload)
-        };
-
-        var response = await _httpClient.SendAsync(request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-            return default;
-
-        return await response.Content.ReadFromJsonAsync<TResponse>(cancellationToken: cancellationToken);
-    }
-
-    // ---------------- DELETE ----------------
-
-    private async Task<bool> DeleteResult(string url, CancellationToken cancellationToken)
-    {
-        var response = await _httpClient.DeleteAsync(url, cancellationToken);
-        return response.IsSuccessStatusCode;
-    }
+  }
 }
-===========================
+```
 
-using System.Net;
-using System.Net.Http.Json;
+---
+
+# ✅ 2. Create strongly typed config classes
+
+Create:
+
+```id="0kprhi"
+/Configuration/ResilienceOptions.cs
+```
+
+```csharp id="z5g62s"
+namespace PollyTest.Configuration;
+
+public sealed class ResilienceOptions
+{
+    public int TimeoutSeconds { get; set; } = 10;
+
+    public RetryOptions Retry { get; set; } = new();
+
+    public CircuitBreakerOptions CircuitBreaker { get; set; } = new();
+}
+
+public sealed class RetryOptions
+{
+    public int MaxAttempts { get; set; } = 3;
+
+    public int DelaySeconds { get; set; } = 1;
+}
+
+public sealed class CircuitBreakerOptions
+{
+    public double FailureRatio { get; set; } = 0.5;
+
+    public int MinimumThroughput { get; set; } = 10;
+
+    public int SamplingDurationSeconds { get; set; } = 30;
+
+    public int BreakDurationSeconds { get; set; } = 15;
+}
+```
+
+---
+
+# ✅ 3. Update your extension method
+
+Update:
+
+```id="v7q0vq"
+/Infrastructure/DependencyInjection/HttpClientResilienceExtensions.cs
+```
+
+```csharp id="0r6fwx"
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http.Resilience;
 using Microsoft.Extensions.Options;
-using Moq;
-using Polly.Timeout;
-using Shouldly;
-using Xunit;
+using PollyTest.Configuration;
+using System.Net;
 
-namespace MyApp.Tests;
+namespace PollyTest.Infrastructure.DependencyInjection;
 
-public class MyClassTests
+public static class HttpClientResilienceExtensions
 {
-    private static readonly PollySettings DefaultSettings = new()
+    public static IServiceCollection AddMyApiHttpClient(
+        this IServiceCollection services,
+        IConfiguration configuration)
     {
-        RetryCount = 3,
-        RetryBaseDelayMs = 1,
-        TimeoutSeconds = 1
-    };
+        // =========================
+        // CONFIG
+        // =========================
+        services.Configure<ResilienceOptions>(
+            configuration.GetSection("Resilience"));
 
-    // ---------------------------------------------------------
-    // GET
-    // ---------------------------------------------------------
+        var apiRoot = configuration["API:root"]
+            ?? throw new NullReferenceException("API:root missing");
 
-    [Fact]
-    public async Task GetFooAsync_ReturnsString_OnSuccess()
-    {
-        // Arrange
-        var handler = new FakeHandler((_, _) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("hello")
-            }));
-        var sut = CreateSut(handler);
+        // build temp provider to access config values
+        using var provider = services.BuildServiceProvider();
 
-        // Act
-        var result = await sut.GetFooAsync();
+        var resilienceOptions = provider
+            .GetRequiredService<IOptions<ResilienceOptions>>()
+            .Value;
 
-        // Assert
-        result.ShouldBe("hello");
-    }
-
-    [Fact]
-    public async Task GetBarAsync_ReturnsDeserialized_OnSuccess()
-    {
-        // Arrange
-        var handler = new FakeHandler((_, _) =>
+        // =========================
+        // HTTP CLIENT
+        // =========================
+        services.AddHttpClient("MyApi", client =>
         {
-            var response = new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = JsonContent.Create(new TestDto("value"))
-            };
-            return Task.FromResult(response);
-        });
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.GetBarAsync();
-
-        // Assert
-        result.ShouldBe("value");
-    }
-
-    // ---------------------------------------------------------
-    // POST
-    // ---------------------------------------------------------
-
-    [Fact]
-    public async Task PostFooAsync_ReturnsNull_OnNonSuccess()
-    {
-        // Arrange
-        var handler = new FakeHandler((_, _) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest)));
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.PostFooAsync(new { Name = "PingPong" });
-
-        // Assert
-        result.ShouldBeNull();
-    }
-
-    [Fact]
-    public async Task PostBarAsync_Retries_OnTransientStatus_ThenSucceeds()
-    {
-        // Arrange
-        var calls = 0;
-        var handler = new FakeHandler((_, _) =>
+            client.BaseAddress = new Uri(apiRoot);
+            client.DefaultRequestHeaders.Add("Accept", "application/json");
+        })
+        .AddResilienceHandler("MyApiResilience", builder =>
         {
-            calls++;
-            if (calls == 1)
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError));
+            // =========================
+            // TIMEOUT
+            // =========================
+            builder.AddTimeout(
+                TimeSpan.FromSeconds(
+                    resilienceOptions.TimeoutSeconds));
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            // =========================
+            // RETRY
+            // =========================
+            builder.AddRetry(new HttpRetryStrategyOptions
             {
-                Content = JsonContent.Create(new TestDto("ok"))
+                MaxRetryAttempts =
+                    resilienceOptions.Retry.MaxAttempts,
+
+                Delay = TimeSpan.FromSeconds(
+                    resilienceOptions.Retry.DelaySeconds),
+
+                BackoffType = DelayBackoffType.Exponential,
+
+                UseJitter = true,
+
+                ShouldHandle = args =>
+                {
+                    var isGet =
+                        args.Outcome.Result?.RequestMessage?.Method
+                        == HttpMethod.Get;
+
+                    var isTransient =
+                        args.Outcome.Exception is HttpRequestException ||
+                        args.Outcome.Result?.StatusCode is
+                            HttpStatusCode.RequestTimeout or
+                            HttpStatusCode.TooManyRequests or
+                            HttpStatusCode.InternalServerError or
+                            HttpStatusCode.BadGateway or
+                            HttpStatusCode.ServiceUnavailable or
+                            HttpStatusCode.GatewayTimeout;
+
+                    return ValueTask.FromResult(isGet && isTransient);
+                },
+
+                OnRetry = args =>
+                {
+                    Console.WriteLine(
+                        $"Retry {args.AttemptNumber} for " +
+                        $"{args.Outcome.Result?.RequestMessage?.RequestUri}");
+
+                    return ValueTask.CompletedTask;
+                }
             });
+
+            // =========================
+            // CIRCUIT BREAKER
+            // =========================
+            builder.AddCircuitBreaker(
+                new HttpCircuitBreakerStrategyOptions
+                {
+                    FailureRatio =
+                        resilienceOptions.CircuitBreaker.FailureRatio,
+
+                    MinimumThroughput =
+                        resilienceOptions.CircuitBreaker.MinimumThroughput,
+
+                    SamplingDuration = TimeSpan.FromSeconds(
+                        resilienceOptions.CircuitBreaker
+                            .SamplingDurationSeconds),
+
+                    BreakDuration = TimeSpan.FromSeconds(
+                        resilienceOptions.CircuitBreaker
+                            .BreakDurationSeconds),
+
+                    ShouldHandle = args =>
+                    {
+                        return ValueTask.FromResult(
+                            args.Outcome.Exception is HttpRequestException ||
+                            args.Outcome.Result?.StatusCode is
+                                HttpStatusCode.InternalServerError or
+                                HttpStatusCode.BadGateway or
+                                HttpStatusCode.ServiceUnavailable);
+                    }
+                });
         });
 
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.PostBarAsync<object, TestDto>(new { Name = "PingPong" });
-
-        // Assert
-        result!.Value.ShouldBe("ok");
-        calls.ShouldBe(2);
+        return services;
     }
-
-    // ---------------------------------------------------------
-    // PUT
-    // ---------------------------------------------------------
-
-    [Fact]
-    public async Task PutAsync_ReturnsString_OnSuccess()
-    {
-        // Arrange
-        var handler = new FakeHandler((_, _) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("updated")
-            }));
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.PutAsync("any", new { });
-
-        // Assert
-        result.ShouldBe("updated");
-    }
-
-    [Fact]
-    public async Task PutAsync_Generic_ReturnsDeserialized_OnSuccess()
-    {
-        // Arrange
-        var handler = new FakeHandler((_, _) =>
-        {
-            var response = new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = JsonContent.Create(new TestDto("put"))
-            };
-            return Task.FromResult(response);
-        });
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.PutAsync<object, TestDto>("any", new { });
-
-        // Assert
-        result!.Value.ShouldBe("put");
-    }
-
-    // ---------------------------------------------------------
-    // PATCH
-    // ---------------------------------------------------------
-
-    [Fact]
-    public async Task PatchAsync_ReturnsString_OnSuccess()
-    {
-        // Arrange
-        var handler = new FakeHandler((request, _) =>
-        {
-            request.Method.ShouldBe(HttpMethod.Patch);
-
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("patched")
-            });
-        });
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.PatchAsync("any", new { });
-
-        // Assert
-        result.ShouldBe("patched");
-    }
-
-    [Fact]
-    public async Task PatchAsync_Generic_ReturnsDeserialized_OnSuccess()
-    {
-        // Arrange
-        var handler = new FakeHandler((request, _) =>
-        {
-            request.Method.ShouldBe(HttpMethod.Patch);
-
-            var response = new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = JsonContent.Create(new TestDto("patched-generic"))
-            };
-            return Task.FromResult(response);
-        });
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.PatchAsync<object, TestDto>("any", new { });
-
-        // Assert
-        result!.Value.ShouldBe("patched-generic");
-    }
-
-    // ---------------------------------------------------------
-    // DELETE
-    // ---------------------------------------------------------
-
-    [Fact]
-    public async Task DeleteAsync_ReturnsTrue_OnSuccess()
-    {
-        // Arrange
-        var handler = new FakeHandler((_, _) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.NoContent)));
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.DeleteAsync("any");
-
-        // Assert
-        result.ShouldBeTrue();
-    }
-
-    [Fact]
-    public async Task DeleteAsync_ReturnsFalse_OnFailure()
-    {
-        // Arrange
-        var handler = new FakeHandler((_, _) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest)));
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.DeleteAsync("any");
-
-        // Assert
-        result.ShouldBeFalse();
-    }
-
-    // ---------------------------------------------------------
-    // RETRY BEHAVIOUR
-    // ---------------------------------------------------------
-
-    [Fact]
-    public async Task Retries_On_HttpRequestException()
-    {
-        // Arrange
-        var calls = 0;
-        var handler = new FakeHandler((_, _) =>
-        {
-            calls++;
-            if (calls == 1)
-                throw new HttpRequestException("boom");
-
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("ok")
-            });
-        });
-
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.GetFooAsync();
-
-        // Assert
-        result.ShouldBe("ok");
-        calls.ShouldBe(2);
-    }
-
-    [Fact]
-    public async Task DoesNotRetry_On_ClientErrorStatus()
-    {
-        // Arrange
-        var calls = 0;
-        var handler = new FakeHandler((_, _) =>
-        {
-            calls++;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest));
-        });
-
-        var sut = CreateSut(handler);
-
-        // Act
-        var result = await sut.GetFooAsync();
-
-        // Assert
-        result.ShouldBeNull();
-        calls.ShouldBe(1);
-    }
-
-    // ---------------------------------------------------------
-    // TIMEOUT & CANCELLATION
-    // ---------------------------------------------------------
-
-    [Fact]
-    public async Task ThrowsTimeoutRejectedException_OnTimeout()
-    {
-        // Arrange
-        var handler = new FakeHandler(async (_, ct) =>
-        {
-            await Task.Delay(TimeSpan.FromSeconds(5), ct);
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("late")
-            };
-        });
-
-        var sut = CreateSut(handler);
-
-        // Act
-        var act = () => sut.GetFooAsync();
-
-        // Assert
-        await act.ShouldThrowAsync<TimeoutRejectedException>();
-    }
-
-    [Fact]
-    public async Task Respects_ExternalCancellationToken()
-    {
-        // Arrange
-        var handler = new FakeHandler(async (_, ct) =>
-        {
-            await Task.Delay(TimeSpan.FromSeconds(5), ct);
-            return new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("never")
-            };
-        });
-
-        var sut = CreateSut(handler);
-        using var cts = new CancellationTokenSource();
-        cts.CancelAfter(TimeSpan.FromMilliseconds(50));
-
-        // Act
-        var act = () => sut.GetFooAsync(cts.Token);
-
-        // Assert
-        await act.ShouldThrowAsync<TaskCanceledException>();
-    }
-
-    // ---------------------------------------------------------
-    // TEST HELPERS
-    // ---------------------------------------------------------
-
-    private static MyClass CreateSut(HttpMessageHandler handler)
-    {
-        var services = new ServiceCollection();
-
-        // Register Polly settings
-        services.Configure<PollySettings>(opts =>
-        {
-            opts.RetryCount = DefaultSettings.RetryCount;
-            opts.RetryBaseDelayMs = DefaultSettings.RetryBaseDelayMs;
-            opts.TimeoutSeconds = DefaultSettings.TimeoutSeconds;
-        });
-
-        // Register HttpClient with handler
-        services.AddHttpClient("MyClient")
-            .ConfigurePrimaryHttpMessageHandler(() => handler);
-
-        // Register MyClass
-        services.AddTransient<IMyClass, MyClass>();
-
-        var provider = services.BuildServiceProvider();
-
-        return provider.GetRequiredService<IMyClass>();
-    }
-
-    private sealed class FakeHandler : HttpMessageHandler
-    {
-        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
-
-        public FakeHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
-        {
-            _handler = handler;
-        }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-            => _handler(request, cancellationToken);
-    }
-
-    private readonly record struct TestDto(string Value);
 }
+```
+
+---
+
+# ✅ 4. Program.cs becomes tiny
+
+```csharp id="a7vq11"
+using PollyTest.Infrastructure.DependencyInjection;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+
+builder.Services.AddFluentUIComponents();
+
+builder.Services.AddMyApiHttpClient(builder.Configuration);
+
+builder.Services.AddScoped<IWeatherApiService, WeatherApiService>();
+```
+
+---
+
+# ⚠️ One improvement (important)
+
+This part:
+
+```csharp id="jv4ts1"
+services.BuildServiceProvider()
+```
+
+works, but is NOT ideal.
+
+The cleaner production approach is:
+
+```csharp id="dq8b0m"
+configuration
+    .GetSection("Resilience")
+    .Get<ResilienceOptions>()
+```
+
+instead of building a provider during registration.
+
+---
+
+# ✅ Better version (recommended)
+
+Replace:
+
+```csharp id="1qlulj"
+services.Configure<ResilienceOptions>(...)
+```
+
+and the temporary provider with:
+
+```csharp id="f8a9t7"
+var resilienceOptions =
+    configuration
+        .GetSection("Resilience")
+        .Get<ResilienceOptions>()
+    ?? new ResilienceOptions();
+```
+
+Much cleaner.
+
+---
+
+# 🚀 Result
+
+Now all resilience tuning is externalized:
+
+* timeout
+* retry attempts
+* retry delay
+* breaker duration
+* failure thresholds
+
+Perfect for:
+
+* prod vs dev configs
+* Kubernetes config maps
+* Azure App Configuration
+* feature toggles
+* operational tuning without redeploying
