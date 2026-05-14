@@ -1,292 +1,83 @@
-Move the resilience values into configuration and bind them to strongly typed options. This keeps your policies adjustable without recompiling and is the standard ASP.NET Core approach.
-
----
-
-# ✅ 1. Add settings to `appsettings.json`
-
-```json id="s5nx91"
-{
-  "API": {
-    "root": "https://localhost:5001/"
-  },
-
-  "Resilience": {
-    "TimeoutSeconds": 10,
-
-    "Retry": {
-      "MaxAttempts": 3,
-      "DelaySeconds": 1
-    },
-
-    "CircuitBreaker": {
-      "FailureRatio": 0.5,
-      "MinimumThroughput": 10,
-      "SamplingDurationSeconds": 30,
-      "BreakDurationSeconds": 15
-    }
-  }
-}
-```
-
----
-
-# ✅ 2. Create strongly typed config classes
-
-Create:
-
-```id="0kprhi"
-/Configuration/ResilienceOptions.cs
-```
-
-```csharp id="z5g62s"
-namespace PollyTest.Configuration;
-
-public sealed class ResilienceOptions
-{
-    public int TimeoutSeconds { get; set; } = 10;
-
-    public RetryOptions Retry { get; set; } = new();
-
-    public CircuitBreakerOptions CircuitBreaker { get; set; } = new();
-}
-
-public sealed class RetryOptions
-{
-    public int MaxAttempts { get; set; } = 3;
-
-    public int DelaySeconds { get; set; } = 1;
-}
-
-public sealed class CircuitBreakerOptions
-{
-    public double FailureRatio { get; set; } = 0.5;
-
-    public int MinimumThroughput { get; set; } = 10;
-
-    public int SamplingDurationSeconds { get; set; } = 30;
-
-    public int BreakDurationSeconds { get; set; } = 15;
-}
-```
-
----
-
-# ✅ 3. Update your extension method
-
-Update:
-
-```id="v7q0vq"
-/Infrastructure/DependencyInjection/HttpClientResilienceExtensions.cs
-```
-
-```csharp id="0r6fwx"
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Http.Resilience;
-using Microsoft.Extensions.Options;
-using PollyTest.Configuration;
-using System.Net;
+using Polly;
+using Polly.Registry;
+using Polly.Timeout;
+using Shouldly;
+using Xunit;
 
-namespace PollyTest.Infrastructure.DependencyInjection;
-
-public static class HttpClientResilienceExtensions
+public class ResiliencePipelineTests
 {
-    public static IServiceCollection AddMyApiHttpClient(
-        this IServiceCollection services,
-        IConfiguration configuration)
+    [Fact]
+    public async Task All_resilience_pipelines_should_resolve_and_timeout()
     {
-        // =========================
-        // CONFIG
-        // =========================
-        services.Configure<ResilienceOptions>(
-            configuration.GetSection("Resilience"));
+        // Arrange
+        var services = new ServiceCollection();
 
-        var apiRoot = configuration["API:root"]
-            ?? throw new NullReferenceException("API:root missing");
+        services.AddLogging();
 
-        // build temp provider to access config values
-        using var provider = services.BuildServiceProvider();
-
-        var resilienceOptions = provider
-            .GetRequiredService<IOptions<ResilienceOptions>>()
-            .Value;
-
-        // =========================
-        // HTTP CLIENT
-        // =========================
-        services.AddHttpClient("MyApi", client =>
+        services.AddResiliencePipeline("fast-timeout", builder =>
         {
-            client.BaseAddress = new Uri(apiRoot);
-            client.DefaultRequestHeaders.Add("Accept", "application/json");
-        })
-        .AddResilienceHandler("MyApiResilience", builder =>
-        {
-            // =========================
-            // TIMEOUT
-            // =========================
-            builder.AddTimeout(
-                TimeSpan.FromSeconds(
-                    resilienceOptions.TimeoutSeconds));
-
-            // =========================
-            // RETRY
-            // =========================
-            builder.AddRetry(new HttpRetryStrategyOptions
-            {
-                MaxRetryAttempts =
-                    resilienceOptions.Retry.MaxAttempts,
-
-                Delay = TimeSpan.FromSeconds(
-                    resilienceOptions.Retry.DelaySeconds),
-
-                BackoffType = DelayBackoffType.Exponential,
-
-                UseJitter = true,
-
-                ShouldHandle = args =>
-                {
-                    var isGet =
-                        args.Outcome.Result?.RequestMessage?.Method
-                        == HttpMethod.Get;
-
-                    var isTransient =
-                        args.Outcome.Exception is HttpRequestException ||
-                        args.Outcome.Result?.StatusCode is
-                            HttpStatusCode.RequestTimeout or
-                            HttpStatusCode.TooManyRequests or
-                            HttpStatusCode.InternalServerError or
-                            HttpStatusCode.BadGateway or
-                            HttpStatusCode.ServiceUnavailable or
-                            HttpStatusCode.GatewayTimeout;
-
-                    return ValueTask.FromResult(isGet && isTransient);
-                },
-
-                OnRetry = args =>
-                {
-                    Console.WriteLine(
-                        $"Retry {args.AttemptNumber} for " +
-                        $"{args.Outcome.Result?.RequestMessage?.RequestUri}");
-
-                    return ValueTask.CompletedTask;
-                }
-            });
-
-            // =========================
-            // CIRCUIT BREAKER
-            // =========================
-            builder.AddCircuitBreaker(
-                new HttpCircuitBreakerStrategyOptions
-                {
-                    FailureRatio =
-                        resilienceOptions.CircuitBreaker.FailureRatio,
-
-                    MinimumThroughput =
-                        resilienceOptions.CircuitBreaker.MinimumThroughput,
-
-                    SamplingDuration = TimeSpan.FromSeconds(
-                        resilienceOptions.CircuitBreaker
-                            .SamplingDurationSeconds),
-
-                    BreakDuration = TimeSpan.FromSeconds(
-                        resilienceOptions.CircuitBreaker
-                            .BreakDurationSeconds),
-
-                    ShouldHandle = args =>
-                    {
-                        return ValueTask.FromResult(
-                            args.Outcome.Exception is HttpRequestException ||
-                            args.Outcome.Result?.StatusCode is
-                                HttpStatusCode.InternalServerError or
-                                HttpStatusCode.BadGateway or
-                                HttpStatusCode.ServiceUnavailable);
-                    }
-                });
+            builder.AddTimeout(TimeSpan.FromMilliseconds(100));
         });
 
-        return services;
+        services.AddResiliencePipeline("slow-timeout", builder =>
+        {
+            builder.AddTimeout(TimeSpan.FromMilliseconds(200));
+        });
+
+        using var provider = services.BuildServiceProvider(
+            new ServiceProviderOptions
+            {
+                ValidateScopes = true,
+                ValidateOnBuild = true
+            });
+
+        using var scope = provider.CreateScope();
+
+        var pipelineProvider =
+            scope.ServiceProvider
+                .GetRequiredService<ResiliencePipelineProvider<string>>();
+
+        pipelineProvider.ShouldNotBeNull();
+
+        //
+        // Find all named resilience pipelines registered in IServiceCollection
+        //
+        var pipelineNames = services
+            .Where(x =>
+                x.ServiceType == typeof(ResiliencePipelineRegistry<string>))
+            .ToList();
+
+        //
+        // Since Polly named pipelines are not directly exposed from IServiceCollection,
+        // keep your known pipeline names centrally here.
+        //
+        var knownPipelineNames = new[]
+        {
+            "fast-timeout",
+            "slow-timeout"
+        };
+
+        foreach (var pipelineName in knownPipelineNames)
+        {
+            //
+            // Resolve pipeline
+            //
+            var pipeline = pipelineProvider.GetPipeline(pipelineName);
+
+            pipeline.ShouldNotBeNull();
+
+            //
+            // Verify timeout strategy actually works
+            //
+            await Should.ThrowAsync<TimeoutRejectedException>(
+                async () =>
+                {
+                    await pipeline.ExecuteAsync(async token =>
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(5), token);
+                    });
+                });
+        }
     }
 }
-```
-
----
-
-# ✅ 4. Program.cs becomes tiny
-
-```csharp id="a7vq11"
-using PollyTest.Infrastructure.DependencyInjection;
-
-var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
-
-builder.Services.AddFluentUIComponents();
-
-builder.Services.AddMyApiHttpClient(builder.Configuration);
-
-builder.Services.AddScoped<IWeatherApiService, WeatherApiService>();
-```
-
----
-
-# ⚠️ One improvement (important)
-
-This part:
-
-```csharp id="jv4ts1"
-services.BuildServiceProvider()
-```
-
-works, but is NOT ideal.
-
-The cleaner production approach is:
-
-```csharp id="dq8b0m"
-configuration
-    .GetSection("Resilience")
-    .Get<ResilienceOptions>()
-```
-
-instead of building a provider during registration.
-
----
-
-# ✅ Better version (recommended)
-
-Replace:
-
-```csharp id="1qlulj"
-services.Configure<ResilienceOptions>(...)
-```
-
-and the temporary provider with:
-
-```csharp id="f8a9t7"
-var resilienceOptions =
-    configuration
-        .GetSection("Resilience")
-        .Get<ResilienceOptions>()
-    ?? new ResilienceOptions();
-```
-
-Much cleaner.
-
----
-
-# 🚀 Result
-
-Now all resilience tuning is externalized:
-
-* timeout
-* retry attempts
-* retry delay
-* breaker duration
-* failure thresholds
-
-Perfect for:
-
-* prod vs dev configs
-* Kubernetes config maps
-* Azure App Configuration
-* feature toggles
-* operational tuning without redeploying
