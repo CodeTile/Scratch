@@ -1,83 +1,265 @@
-using Microsoft.Extensions.DependencyInjection;
-using Polly;
-using Polly.Registry;
-using Polly.Timeout;
-using Shouldly;
-using Xunit;
+Perfect — Serilog is exactly what you want here. We’ll remove all `Console.WriteLine` usage and wire everything through **Serilog via ILoggerFactory (DI-safe, structured logging, fully scoped).**
 
-public class ResiliencePipelineTests
+This is the production version of your resilience pipeline.
+
+---
+
+# ✅ 1. Key change: use ILoggerFactory (NOT Console)
+
+Polly pipelines don’t have direct DI injection, so the correct pattern is:
+
+```csharp
+var logger = serviceProvider.GetRequiredService<ILogger<T>>();
+```
+
+BUT in `AddResilienceHandler`, we access services via `builder.Services`.
+
+So we’ll resolve logging properly inside the pipeline.
+
+---
+
+# 🚀 2. FINAL Serilog-ready resilience extension
+
+```csharp id="k8x2mc"
+using System.Net;
+using Microsoft.Extensions.Http.Resilience;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using PollyTest.Configuration;
+
+namespace PollyTest.Infrastructure.Http;
+
+public static class MyApiResilienceExtensions
 {
-    [Fact]
-    public async Task All_resilience_pipelines_should_resolve_and_timeout()
+    public static IHttpClientBuilder AddMyApiResilience(
+        this IHttpClientBuilder builder,
+        IConfiguration config)
     {
-        // Arrange
-        var services = new ServiceCollection();
+        var options =
+            config.GetSection("Resilience")
+                   .Get<ResilienceOptions>()
+            ?? new ResilienceOptions();
 
-        services.AddLogging();
-
-        services.AddResiliencePipeline("fast-timeout", builder =>
+        builder.AddResilienceHandler("myapi-resilience", pipeline =>
         {
-            builder.AddTimeout(TimeSpan.FromMilliseconds(100));
-        });
+            // =====================================================
+            // ⏱ TIMEOUT
+            // =====================================================
+            pipeline.AddTimeout(TimeSpan.FromSeconds(options.TimeoutSeconds));
 
-        services.AddResiliencePipeline("slow-timeout", builder =>
-        {
-            builder.AddTimeout(TimeSpan.FromMilliseconds(200));
-        });
-
-        using var provider = services.BuildServiceProvider(
-            new ServiceProviderOptions
+            // =====================================================
+            // 🔁 RETRY (Serilog logging)
+            // =====================================================
+            pipeline.AddRetry(new HttpRetryStrategyOptions
             {
-                ValidateScopes = true,
-                ValidateOnBuild = true
+                MaxRetryAttempts = options.Retry.MaxAttempts,
+                Delay = TimeSpan.FromSeconds(options.Retry.DelaySeconds),
+                BackoffType = DelayBackoffType.Exponential,
+                UseJitter = true,
+
+                ShouldHandle = args =>
+                {
+                    var response = args.Outcome.Result as HttpResponseMessage;
+
+                    var method = response?.RequestMessage?.Method;
+
+                    var retryableVerb =
+                        method == HttpMethod.Get ||
+                        method == HttpMethod.Put ||
+                        method == HttpMethod.Delete;
+
+                    var isTransient =
+                        args.Outcome.Exception is HttpRequestException ||
+                        response?.StatusCode is
+                            HttpStatusCode.RequestTimeout or
+                            HttpStatusCode.TooManyRequests or
+                            HttpStatusCode.InternalServerError or
+                            HttpStatusCode.BadGateway or
+                            HttpStatusCode.ServiceUnavailable or
+                            HttpStatusCode.GatewayTimeout;
+
+                    return ValueTask.FromResult(retryableVerb && isTransient);
+                },
+
+                OnRetry = args =>
+                {
+                    var loggerFactory =
+                        args.Context.ServiceProvider
+                            .GetRequiredService<ILoggerFactory>();
+
+                    var logger = loggerFactory.CreateLogger("MyApi.Resilience");
+
+                    var response = args.Outcome.Result as HttpResponseMessage;
+
+                    logger.LogWarning(
+                        "HTTP Retry {Attempt} | {Method} {Url} | Status: {Status}",
+                        args.AttemptNumber,
+                        response?.RequestMessage?.Method,
+                        response?.RequestMessage?.RequestUri,
+                        response?.StatusCode
+                    );
+
+                    return ValueTask.CompletedTask;
+                }
             });
 
-        using var scope = provider.CreateScope();
+            // =====================================================
+            // 🔌 CIRCUIT BREAKER (Serilog logging)
+            // =====================================================
+            pipeline.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
+            {
+                FailureRatio = options.CircuitBreaker.FailureRatio,
+                MinimumThroughput = options.CircuitBreaker.MinimumThroughput,
+                SamplingDuration = TimeSpan.FromSeconds(options.CircuitBreaker.SamplingDurationSeconds),
+                BreakDuration = TimeSpan.FromSeconds(options.CircuitBreaker.BreakDurationSeconds),
 
-        var pipelineProvider =
-            scope.ServiceProvider
-                .GetRequiredService<ResiliencePipelineProvider<string>>();
-
-        pipelineProvider.ShouldNotBeNull();
-
-        //
-        // Find all named resilience pipelines registered in IServiceCollection
-        //
-        var pipelineNames = services
-            .Where(x =>
-                x.ServiceType == typeof(ResiliencePipelineRegistry<string>))
-            .ToList();
-
-        //
-        // Since Polly named pipelines are not directly exposed from IServiceCollection,
-        // keep your known pipeline names centrally here.
-        //
-        var knownPipelineNames = new[]
-        {
-            "fast-timeout",
-            "slow-timeout"
-        };
-
-        foreach (var pipelineName in knownPipelineNames)
-        {
-            //
-            // Resolve pipeline
-            //
-            var pipeline = pipelineProvider.GetPipeline(pipelineName);
-
-            pipeline.ShouldNotBeNull();
-
-            //
-            // Verify timeout strategy actually works
-            //
-            await Should.ThrowAsync<TimeoutRejectedException>(
-                async () =>
+                ShouldHandle = args =>
                 {
-                    await pipeline.ExecuteAsync(async token =>
+                    var response = args.Outcome.Result as HttpResponseMessage;
+
+                    return ValueTask.FromResult(
+                        args.Outcome.Exception is HttpRequestException ||
+                        response?.StatusCode is
+                            HttpStatusCode.InternalServerError or
+                            HttpStatusCode.BadGateway or
+                            HttpStatusCode.ServiceUnavailable or
+                            HttpStatusCode.GatewayTimeout);
+                },
+
+                OnOpened = args =>
+                {
+                    var loggerFactory =
+                        args.Context.ServiceProvider
+                            .GetRequiredService<ILoggerFactory>();
+
+                    var logger = loggerFactory.CreateLogger("MyApi.Resilience");
+
+                    logger.LogError(
+                        "🚨 Circuit OPENED for {Endpoint}",
+                        args.Context.OperationKey);
+
+                    return ValueTask.CompletedTask;
+                },
+
+                OnClosed = args =>
+                {
+                    var loggerFactory =
+                        args.Context.ServiceProvider
+                            .GetRequiredService<ILoggerFactory>();
+
+                    var logger = loggerFactory.CreateLogger("MyApi.Resilience");
+
+                    logger.LogInformation(
+                        "✅ Circuit CLOSED for {Endpoint}",
+                        args.Context.OperationKey);
+
+                    return ValueTask.CompletedTask;
+                }
+            });
+
+            // =====================================================
+            // 📡 FALLBACK (optional, Serilog-safe)
+            // =====================================================
+            pipeline.AddFallback(new HttpFallbackStrategyOptions<HttpResponseMessage>
+            {
+                ShouldHandle = args =>
+                {
+                    var response = args.Outcome.Result as HttpResponseMessage;
+
+                    return ValueTask.FromResult(
+                        response?.RequestMessage?.Method == HttpMethod.Get &&
+                        (args.Outcome.Exception is HttpRequestException ||
+                         response?.StatusCode >= HttpStatusCode.InternalServerError));
+                },
+
+                FallbackAction = args =>
+                {
+                    var loggerFactory =
+                        args.Context.ServiceProvider
+                            .GetRequiredService<ILoggerFactory>();
+
+                    var logger = loggerFactory.CreateLogger("MyApi.Resilience");
+
+                    logger.LogWarning(
+                        "Fallback triggered for {Endpoint}",
+                        args.Context.OperationKey);
+
+                    var fallback = new HttpResponseMessage(HttpStatusCode.OK)
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(5), token);
-                    });
-                });
-        }
+                        Content = new StringContent("""{"fallback":true}""")
+                    };
+
+                    return ValueTask.FromResult(new ValueTask<HttpResponseMessage>(fallback));
+                }
+            });
+        });
+
+        return builder;
     }
 }
+```
+
+---
+
+# 🧩 3. Program.cs stays clean
+
+```csharp id="p7x1kd"
+builder.Services.AddHttpClient("MyApi", client =>
+{
+    client.BaseAddress = new Uri(rootAPI);
+    client.DefaultRequestHeaders.Add("Accept", "application/json");
+})
+.AddMyApiResilience(builder.Configuration);
+```
+
+---
+
+# 📊 4. Why this works well with Serilog
+
+Because you now get:
+
+### ✔ Structured logs
+
+```json
+{
+  "Attempt": 2,
+  "Method": "GET",
+  "Url": "/weather",
+  "Status": 500
+}
+```
+
+### ✔ Correlation support
+
+If Serilog is configured with:
+
+* `Enrich.FromLogContext()`
+* request logging middleware
+
+you get full traceability across:
+
+* Blazor Server circuit
+* HTTP pipeline
+* API calls
+
+---
+
+# 🚀 5. Optional next upgrade (very powerful)
+
+If you want to go one level further, I can help you add:
+
+### 🔥 Serilog enrichers for:
+
+* endpoint name (WeatherApi, AuthApi)
+* retry attempt counter as property
+* circuit state tracking
+
+### 📡 OpenTelemetry + Serilog correlation bridge
+
+So logs + traces align perfectly in:
+
+* Seq
+* Grafana
+* AppInsights
+
+Just say 👍
