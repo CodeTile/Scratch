@@ -1,265 +1,194 @@
-Perfect — Serilog is exactly what you want here. We’ll remove all `Console.WriteLine` usage and wire everything through **Serilog via ILoggerFactory (DI-safe, structured logging, fully scoped).**
+```yaml id="s0s3zr"
+trigger:
+- main
 
-This is the production version of your resilience pipeline.
+pool:
+  vmImage: 'windows-latest'
 
----
+variables:
+  BuildConfiguration: 'Release'
+  SolutionFile: 'FooBar.slnx'
 
-# ✅ 1. Key change: use ILoggerFactory (NOT Console)
+steps:
 
-Polly pipelines don’t have direct DI injection, so the correct pattern is:
+# ============================================================
+# 1. Clean sources
+# ============================================================
+- checkout: self
+  clean: true
 
-```csharp
-var logger = serviceProvider.GetRequiredService<ILogger<T>>();
+# ============================================================
+# Display tool versions used by the build agent
+#
+# Displays:
+#   - Git version
+#   - NuGet version
+#   - .NET SDK version
+#   - Full .NET SDK information
+#
+# This pipeline assumes:
+#   - NuGet is already available on the build agent
+#   - .NET 10 SDK is already installed on the build agent
+# ============================================================
+- powershell: |
+    Write-Host "========================================"
+    Write-Host "Git Version"
+    Write-Host "========================================"
+    git --version
+
+    Write-Host ""
+    Write-Host "========================================"
+    Write-Host "NuGet Version"
+    Write-Host "========================================"
+    nuget help | Select-String "NuGet Version"
+
+    Write-Host ""
+    Write-Host "========================================"
+    Write-Host ".NET SDK Version"
+    Write-Host "========================================"
+    dotnet --version
+
+    Write-Host ""
+    Write-Host "========================================"
+    Write-Host ".NET SDK Details"
+    Write-Host "========================================"
+    dotnet --info
+  displayName: 'Display Tool Versions'
+
+# ============================================================
+# 2. Restore NuGet packages
+# ============================================================
+- task: NuGetCommand@2
+  displayName: 'Restore NuGet Packages'
+  inputs:
+    command: 'restore'
+    restoreSolution: '$(SolutionFile)'
+
+# ============================================================
+# 3. Build solution
+# ============================================================
+- task: DotNetCoreCLI@2
+  displayName: 'Build Solution'
+  inputs:
+    command: 'build'
+    projects: '$(SolutionFile)'
+    arguments: '--configuration $(BuildConfiguration) --no-restore'
+
+# ============================================================
+# Install ReportGenerator tool
+# ============================================================
+- script: |
+    dotnet tool install -g dotnet-reportgenerator-globaltool
+  displayName: 'Install ReportGenerator'
+
+# ============================================================
+# 4. Run all tests with code coverage
+#
+# IMPORTANT:
+# Test projects must reference the NuGet package:
+#
+#   <PackageReference Include="coverlet.collector" Version="6.*">
+#     <PrivateAssets>all</PrivateAssets>
+#   </PackageReference>
+#
+# Coverage exclusions:
+#   [*Tests*]*
+#     Excludes any assembly/project containing "Tests"
+#
+# Coverage is collected using:
+#   --collect:"XPlat Code Coverage"
+# ============================================================
+- task: DotNetCoreCLI@2
+  displayName: 'Run Tests with Coverage'
+  inputs:
+    command: 'test'
+    projects: '$(SolutionFile)'
+    arguments: >
+      --configuration $(BuildConfiguration)
+      --no-build
+      --collect:"XPlat Code Coverage;Format=cobertura;Exclude=[*Tests*]*"
+      --logger trx
+    publishTestResults: true
+
+# ============================================================
+# Generate HTML + Cobertura coverage report
+#
+# Coverage report files generated:
+#
+#   $(Build.SourcesDirectory)/CoverageReport/index.html
+#   $(Build.SourcesDirectory)/CoverageReport/Cobertura.xml
+#
+# HtmlInline_AzurePipelines:
+#   Generates a browsable HTML report.
+#
+# Cobertura:
+#   Generates XML format consumed by Azure DevOps.
+# ============================================================
+- script: |
+    reportgenerator ^
+      -reports:"$(Agent.TempDirectory)/**/coverage.cobertura.xml" ^
+      -targetdir:"$(Build.SourcesDirectory)/CoverageReport" ^
+      -reporttypes:"HtmlInline_AzurePipelines;Cobertura"
+  displayName: 'Generate Coverage Report'
+
+# ============================================================
+# Publish coverage results to Azure DevOps
+#
+# HOW TO VIEW COVERAGE:
+#
+# 1. Open Azure DevOps
+# 2. Go to Pipelines
+# 3. Open the completed pipeline run
+# 4. Select the "Code Coverage" tab
+#
+# Azure DevOps reads coverage data from:
+#   CoverageReport/Cobertura.xml
+# ============================================================
+- task: PublishCodeCoverageResults@2
+  displayName: 'Publish Code Coverage'
+  inputs:
+    summaryFileLocation: '$(Build.SourcesDirectory)/CoverageReport/Cobertura.xml'
+    pathToSources: '$(Build.SourcesDirectory)'
+    failIfCoverageEmpty: true
+
+# ============================================================
+# Publish full HTML report as downloadable artifact
+#
+# HOW TO VIEW HTML REPORT:
+#
+# 1. Open the completed pipeline run
+# 2. Open the "Artifacts" section
+# 3. Download artifact: CodeCoverageReport
+# 4. Open:
+#      index.html
+#
+# This provides detailed per-file and per-line coverage.
+# ============================================================
+- task: PublishPipelineArtifact@1
+  displayName: 'Publish Coverage HTML Report'
+  inputs:
+    targetPath: '$(Build.SourcesDirectory)/CoverageReport'
+    artifact: 'CodeCoverageReport'
+
+# ============================================================
+# Tag successful build with the Azure DevOps build number
+#
+# Example tag:
+#   20260515.3
+#
+# HOW TO VIEW TAG:
+#
+# 1. Open Pipelines
+# 2. Open the completed build
+# 3. View "Tags" section
+#
+# Build.BuildNumber is automatically generated by Azure DevOps.
+# ============================================================
+- powershell: |
+    Write-Host "Tagging build with:"
+    Write-Host "$(Build.BuildNumber)"
+
+    Write-Host "##vso[build.addbuildtag]$(Build.BuildNumber)"
+  displayName: 'Tag Build With Build Number'
+  condition: succeeded()
 ```
-
-BUT in `AddResilienceHandler`, we access services via `builder.Services`.
-
-So we’ll resolve logging properly inside the pipeline.
-
----
-
-# 🚀 2. FINAL Serilog-ready resilience extension
-
-```csharp id="k8x2mc"
-using System.Net;
-using Microsoft.Extensions.Http.Resilience;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using PollyTest.Configuration;
-
-namespace PollyTest.Infrastructure.Http;
-
-public static class MyApiResilienceExtensions
-{
-    public static IHttpClientBuilder AddMyApiResilience(
-        this IHttpClientBuilder builder,
-        IConfiguration config)
-    {
-        var options =
-            config.GetSection("Resilience")
-                   .Get<ResilienceOptions>()
-            ?? new ResilienceOptions();
-
-        builder.AddResilienceHandler("myapi-resilience", pipeline =>
-        {
-            // =====================================================
-            // ⏱ TIMEOUT
-            // =====================================================
-            pipeline.AddTimeout(TimeSpan.FromSeconds(options.TimeoutSeconds));
-
-            // =====================================================
-            // 🔁 RETRY (Serilog logging)
-            // =====================================================
-            pipeline.AddRetry(new HttpRetryStrategyOptions
-            {
-                MaxRetryAttempts = options.Retry.MaxAttempts,
-                Delay = TimeSpan.FromSeconds(options.Retry.DelaySeconds),
-                BackoffType = DelayBackoffType.Exponential,
-                UseJitter = true,
-
-                ShouldHandle = args =>
-                {
-                    var response = args.Outcome.Result as HttpResponseMessage;
-
-                    var method = response?.RequestMessage?.Method;
-
-                    var retryableVerb =
-                        method == HttpMethod.Get ||
-                        method == HttpMethod.Put ||
-                        method == HttpMethod.Delete;
-
-                    var isTransient =
-                        args.Outcome.Exception is HttpRequestException ||
-                        response?.StatusCode is
-                            HttpStatusCode.RequestTimeout or
-                            HttpStatusCode.TooManyRequests or
-                            HttpStatusCode.InternalServerError or
-                            HttpStatusCode.BadGateway or
-                            HttpStatusCode.ServiceUnavailable or
-                            HttpStatusCode.GatewayTimeout;
-
-                    return ValueTask.FromResult(retryableVerb && isTransient);
-                },
-
-                OnRetry = args =>
-                {
-                    var loggerFactory =
-                        args.Context.ServiceProvider
-                            .GetRequiredService<ILoggerFactory>();
-
-                    var logger = loggerFactory.CreateLogger("MyApi.Resilience");
-
-                    var response = args.Outcome.Result as HttpResponseMessage;
-
-                    logger.LogWarning(
-                        "HTTP Retry {Attempt} | {Method} {Url} | Status: {Status}",
-                        args.AttemptNumber,
-                        response?.RequestMessage?.Method,
-                        response?.RequestMessage?.RequestUri,
-                        response?.StatusCode
-                    );
-
-                    return ValueTask.CompletedTask;
-                }
-            });
-
-            // =====================================================
-            // 🔌 CIRCUIT BREAKER (Serilog logging)
-            // =====================================================
-            pipeline.AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions
-            {
-                FailureRatio = options.CircuitBreaker.FailureRatio,
-                MinimumThroughput = options.CircuitBreaker.MinimumThroughput,
-                SamplingDuration = TimeSpan.FromSeconds(options.CircuitBreaker.SamplingDurationSeconds),
-                BreakDuration = TimeSpan.FromSeconds(options.CircuitBreaker.BreakDurationSeconds),
-
-                ShouldHandle = args =>
-                {
-                    var response = args.Outcome.Result as HttpResponseMessage;
-
-                    return ValueTask.FromResult(
-                        args.Outcome.Exception is HttpRequestException ||
-                        response?.StatusCode is
-                            HttpStatusCode.InternalServerError or
-                            HttpStatusCode.BadGateway or
-                            HttpStatusCode.ServiceUnavailable or
-                            HttpStatusCode.GatewayTimeout);
-                },
-
-                OnOpened = args =>
-                {
-                    var loggerFactory =
-                        args.Context.ServiceProvider
-                            .GetRequiredService<ILoggerFactory>();
-
-                    var logger = loggerFactory.CreateLogger("MyApi.Resilience");
-
-                    logger.LogError(
-                        "🚨 Circuit OPENED for {Endpoint}",
-                        args.Context.OperationKey);
-
-                    return ValueTask.CompletedTask;
-                },
-
-                OnClosed = args =>
-                {
-                    var loggerFactory =
-                        args.Context.ServiceProvider
-                            .GetRequiredService<ILoggerFactory>();
-
-                    var logger = loggerFactory.CreateLogger("MyApi.Resilience");
-
-                    logger.LogInformation(
-                        "✅ Circuit CLOSED for {Endpoint}",
-                        args.Context.OperationKey);
-
-                    return ValueTask.CompletedTask;
-                }
-            });
-
-            // =====================================================
-            // 📡 FALLBACK (optional, Serilog-safe)
-            // =====================================================
-            pipeline.AddFallback(new HttpFallbackStrategyOptions<HttpResponseMessage>
-            {
-                ShouldHandle = args =>
-                {
-                    var response = args.Outcome.Result as HttpResponseMessage;
-
-                    return ValueTask.FromResult(
-                        response?.RequestMessage?.Method == HttpMethod.Get &&
-                        (args.Outcome.Exception is HttpRequestException ||
-                         response?.StatusCode >= HttpStatusCode.InternalServerError));
-                },
-
-                FallbackAction = args =>
-                {
-                    var loggerFactory =
-                        args.Context.ServiceProvider
-                            .GetRequiredService<ILoggerFactory>();
-
-                    var logger = loggerFactory.CreateLogger("MyApi.Resilience");
-
-                    logger.LogWarning(
-                        "Fallback triggered for {Endpoint}",
-                        args.Context.OperationKey);
-
-                    var fallback = new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent("""{"fallback":true}""")
-                    };
-
-                    return ValueTask.FromResult(new ValueTask<HttpResponseMessage>(fallback));
-                }
-            });
-        });
-
-        return builder;
-    }
-}
-```
-
----
-
-# 🧩 3. Program.cs stays clean
-
-```csharp id="p7x1kd"
-builder.Services.AddHttpClient("MyApi", client =>
-{
-    client.BaseAddress = new Uri(rootAPI);
-    client.DefaultRequestHeaders.Add("Accept", "application/json");
-})
-.AddMyApiResilience(builder.Configuration);
-```
-
----
-
-# 📊 4. Why this works well with Serilog
-
-Because you now get:
-
-### ✔ Structured logs
-
-```json
-{
-  "Attempt": 2,
-  "Method": "GET",
-  "Url": "/weather",
-  "Status": 500
-}
-```
-
-### ✔ Correlation support
-
-If Serilog is configured with:
-
-* `Enrich.FromLogContext()`
-* request logging middleware
-
-you get full traceability across:
-
-* Blazor Server circuit
-* HTTP pipeline
-* API calls
-
----
-
-# 🚀 5. Optional next upgrade (very powerful)
-
-If you want to go one level further, I can help you add:
-
-### 🔥 Serilog enrichers for:
-
-* endpoint name (WeatherApi, AuthApi)
-* retry attempt counter as property
-* circuit state tracking
-
-### 📡 OpenTelemetry + Serilog correlation bridge
-
-So logs + traces align perfectly in:
-
-* Seq
-* Grafana
-* AppInsights
-
-Just say 👍

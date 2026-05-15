@@ -1,6 +1,0 @@
-<Solution>
-  <Project Path="PollyTest.Api.Tests/PollyTest.Api.Tests.csproj" />
-  <Project Path="PollyTest.Api/PollyTest.Api.csproj" />
-  <Project Path="PollyTest.Tests/PollyTest.Tests.csproj" />
-  <Project Path="PollyTest/PollyTest.csproj" />
-</Solution>
