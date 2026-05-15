@@ -106,7 +106,8 @@ steps:
     arguments: >
       --configuration $(BuildConfiguration)
       --no-build
-      --collect:"XPlat Code Coverage;Format=cobertura;Exclude=[*Tests*]*"
+      --collect:"XPlat Code Coverage"
+      --settings .runsettings
       --logger trx
     publishTestResults: true
 
@@ -118,7 +119,7 @@ steps:
 #   $(Build.SourcesDirectory)/CoverageReport/index.html
 #   $(Build.SourcesDirectory)/CoverageReport/Cobertura.xml
 #
-# HtmlInline_AzurePipelines:
+# Html:
 #   Generates a browsable HTML report.
 #
 # Cobertura:
@@ -128,7 +129,7 @@ steps:
     reportgenerator ^
       -reports:"$(Agent.TempDirectory)/**/coverage.cobertura.xml" ^
       -targetdir:"$(Build.SourcesDirectory)/CoverageReport" ^
-      -reporttypes:"HtmlInline_AzurePipelines;Cobertura"
+      -reporttypes:"Html;Cobertura"
   displayName: 'Generate Coverage Report'
 
 # ============================================================
@@ -191,4 +192,123 @@ steps:
     Write-Host "##vso[build.addbuildtag]$(Build.BuildNumber)"
   displayName: 'Tag Build With Build Number'
   condition: succeeded()
+```
+
+=========================================
+
+```xml id="elwbn7"
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+
+  <RunConfiguration>
+    <ResultsDirectory>TestResults</ResultsDirectory>
+    <TargetPlatform>x64</TargetPlatform>
+    <MaxCpuCount>0</MaxCpuCount>
+  </RunConfiguration>
+
+  <DataCollectionRunSettings>
+
+    <DataCollectors>
+
+      <DataCollector friendlyName="XPlat code coverage">
+
+        <Configuration>
+
+          <!--
+            Coverage output format.
+            Cobertura works well with Azure DevOps.
+          -->
+          <Format>cobertura</Format>
+
+          <!--
+            ====================================================
+            EXCLUDE ASSEMBLIES
+            ====================================================
+
+            Excludes:
+              - All test projects
+              - All Microsoft assemblies
+              - Common third-party test libraries
+          -->
+          <Exclude>
+
+            [*Tests*]*,
+
+            [Microsoft.*]*,
+
+            [xunit*]*,
+            [FluentAssertions*]*,
+            [Moq*]*,
+            [coverlet*]*
+
+          </Exclude>
+
+          <!--
+            ====================================================
+            EXCLUDE FILES
+            ====================================================
+
+            Excludes:
+              - Program.cs
+              - generated files
+              - obj/bin folders
+              - migrations
+          -->
+          <ExcludeByFile>
+
+            **/Program.cs,
+
+            **/bin/**,
+
+            **/obj/**,
+
+            **/*.g.cs,
+
+            **/*.generated.cs,
+
+            **/*Designer.cs,
+
+            **/Migrations/**
+
+          </ExcludeByFile>
+
+          <!--
+            ====================================================
+            EXCLUDE ATTRIBUTES
+            ====================================================
+          -->
+          <ExcludeByAttribute>
+
+            Obsolete,
+
+            GeneratedCodeAttribute,
+
+            CompilerGeneratedAttribute,
+
+            ExcludeFromCodeCoverageAttribute
+
+          </ExcludeByAttribute>
+
+          <!--
+            Recommended defaults
+          -->
+          <IncludeTestAssembly>false</IncludeTestAssembly>
+
+          <SingleHit>false</SingleHit>
+
+          <SkipAutoProps>true</SkipAutoProps>
+
+          <DeterministicReport>true</DeterministicReport>
+
+          <UseSourceLink>true</UseSourceLink>
+
+        </Configuration>
+
+      </DataCollector>
+
+    </DataCollectors>
+
+  </DataCollectionRunSettings>
+
+</RunSettings>
 ```
