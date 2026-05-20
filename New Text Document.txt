@@ -1,314 +1,529 @@
-```yaml id="s0s3zr"
-trigger:
-- main
+Understood. Here’s the regenerated claims transformation example using explicit braces on all `if`, `foreach`, and similar statements.
 
-pool:
-  vmImage: 'windows-latest'
+## `AdClaimsTransformation.cs`
 
-variables:
-  BuildConfiguration: 'Release'
-  SolutionFile: 'FooBar.slnx'
+```csharp
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Options;
+using System.Security.Claims;
 
-steps:
+public class AdClaimsTransformation
+    : IClaimsTransformation
+{
+    private readonly IAdService _adService;
+    private readonly AuthOptions _options;
 
-# ============================================================
-# 1. Clean sources
-# ============================================================
-- checkout: self
-  clean: true
+    public AdClaimsTransformation(
+        IAdService adService,
+        IOptions<AuthOptions> options)
+    {
+        _adService = adService;
+        _options = options.Value;
+    }
 
-# ============================================================
-# Display tool versions used by the build agent
-#
-# Displays:
-#   - Git version
-#   - NuGet version
-#   - .NET SDK version
-#   - Full .NET SDK information
-#
-# This pipeline assumes:
-#   - NuGet is already available on the build agent
-#   - .NET 10 SDK is already installed on the build agent
-# ============================================================
-- powershell: |
-    Write-Host "========================================"
-    Write-Host "Git Version"
-    Write-Host "========================================"
-    git --version
+    public Task<ClaimsPrincipal> TransformAsync(
+        ClaimsPrincipal principal)
+    {
+        if (principal.Identity is not ClaimsIdentity identity)
+        {
+            return Task.FromResult(principal);
+        }
 
-    Write-Host ""
-    Write-Host "========================================"
-    Write-Host "NuGet Version"
-    Write-Host "========================================"
-    nuget help | Select-String "NuGet Version"
+        if (!identity.IsAuthenticated)
+        {
+            return Task.FromResult(principal);
+        }
 
-    Write-Host ""
-    Write-Host "========================================"
-    Write-Host ".NET SDK Version"
-    Write-Host "========================================"
-    dotnet --version
+        // Prevent duplicate claims
+        if (identity.Claims.Any(c => c.Type == ClaimTypes.Role))
+        {
+            return Task.FromResult(principal);
+        }
 
-    Write-Host ""
-    Write-Host "========================================"
-    Write-Host ".NET SDK Details"
-    Write-Host "========================================"
-    dotnet --info
-  displayName: 'Display Tool Versions'
+        var username = identity.Name;
 
-# ============================================================
-# 2. Restore NuGet packages
-# ============================================================
-- task: NuGetCommand@2
-  displayName: 'Restore NuGet Packages'
-  inputs:
-    command: 'restore'
-    restoreSolution: '$(SolutionFile)'
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return Task.FromResult(principal);
+        }
 
-# ============================================================
-# 3. Build solution
-# ============================================================
-- task: DotNetCoreCLI@2
-  displayName: 'Build Solution'
-  inputs:
-    command: 'build'
-    projects: '$(SolutionFile)'
-    arguments: '--configuration $(BuildConfiguration) --no-restore'
+        var userGroups =
+            _adService.GetUserGroups(username);
 
-# ============================================================
-# Install ReportGenerator tool
-# ============================================================
-- script: |
-    dotnet tool install -g dotnet-reportgenerator-globaltool
-  displayName: 'Install ReportGenerator'
+        var roles = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
 
-# ============================================================
-# 4. Run all tests with code coverage
-#
-# IMPORTANT:
-# Test projects must reference the NuGet package:
-#
-#   <PackageReference Include="coverlet.collector" Version="6.*">
-#     <PrivateAssets>all</PrivateAssets>
-#   </PackageReference>
-#
-# Coverage exclusions:
-#   [*Tests*]*
-#     Excludes any assembly/project containing "Tests"
-#
-# Coverage is collected using:
-#   --collect:"XPlat Code Coverage"
-# ============================================================
-- task: DotNetCoreCLI@2
-  displayName: 'Run Tests with Coverage'
-  inputs:
-    command: 'test'
-    projects: '$(SolutionFile)'
-    arguments: >
-      --configuration $(BuildConfiguration)
-      --no-build
-      --collect:"XPlat Code Coverage"
-      --settings .runsettings
-      --logger trx
-    publishTestResults: true
+        foreach (var mapping in _options.Groups)
+        {
+            var adGroup = mapping.Key;
+            var mappedRoles = mapping.Value;
 
-# ============================================================
-# Generate HTML + Cobertura coverage report
-#
-# Coverage report files generated:
-#
-#   $(Build.SourcesDirectory)/CoverageReport/index.html
-#   $(Build.SourcesDirectory)/CoverageReport/Cobertura.xml
-#
-# Html:
-#   Generates a browsable HTML report.
-#
-# Cobertura:
-#   Generates XML format consumed by Azure DevOps.
-# ============================================================
-- script: |
-    reportgenerator ^
-      -reports:"$(Agent.TempDirectory)/**/coverage.cobertura.xml" ^
-      -targetdir:"$(Build.SourcesDirectory)/CoverageReport" ^
-      -reporttypes:"Html;Cobertura"
-  displayName: 'Generate Coverage Report'
+            if (userGroups.Contains(
+                    adGroup,
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                foreach (var role in mappedRoles)
+                {
+                    roles.Add(role);
+                }
+            }
+        }
 
-# ============================================================
-# Publish coverage results to Azure DevOps
-#
-# HOW TO VIEW COVERAGE:
-#
-# 1. Open Azure DevOps
-# 2. Go to Pipelines
-# 3. Open the completed pipeline run
-# 4. Select the "Code Coverage" tab
-#
-# Azure DevOps reads coverage data from:
-#   CoverageReport/Cobertura.xml
-# ============================================================
-- task: PublishCodeCoverageResults@2
-  displayName: 'Publish Code Coverage'
-  inputs:
-    summaryFileLocation: '$(Build.SourcesDirectory)/CoverageReport/Cobertura.xml'
-    pathToSources: '$(Build.SourcesDirectory)'
-    failIfCoverageEmpty: true
+        foreach (var role in roles)
+        {
+            identity.AddClaim(
+                new Claim(
+                    ClaimTypes.Role,
+                    role));
+        }
 
-# ============================================================
-# Publish full HTML report as downloadable artifact
-#
-# HOW TO VIEW HTML REPORT:
-#
-# 1. Open the completed pipeline run
-# 2. Open the "Artifacts" section
-# 3. Download artifact: CodeCoverageReport
-# 4. Open:
-#      index.html
-#
-# This provides detailed per-file and per-line coverage.
-# ============================================================
-- task: PublishPipelineArtifact@1
-  displayName: 'Publish Coverage HTML Report'
-  inputs:
-    targetPath: '$(Build.SourcesDirectory)/CoverageReport'
-    artifact: 'CodeCoverageReport'
-
-# ============================================================
-# Tag successful build with the Azure DevOps build number
-#
-# Example tag:
-#   20260515.3
-#
-# HOW TO VIEW TAG:
-#
-# 1. Open Pipelines
-# 2. Open the completed build
-# 3. View "Tags" section
-#
-# Build.BuildNumber is automatically generated by Azure DevOps.
-# ============================================================
-- powershell: |
-    Write-Host "Tagging build with:"
-    Write-Host "$(Build.BuildNumber)"
-
-    Write-Host "##vso[build.addbuildtag]$(Build.BuildNumber)"
-  displayName: 'Tag Build With Build Number'
-  condition: succeeded()
+        return Task.FromResult(principal);
+    }
+}
 ```
 
-=========================================
+Example usage:
 
-```xml id="elwbn7"
-<?xml version="1.0" encoding="utf-8"?>
-<RunSettings>
-
-  <RunConfiguration>
-    <ResultsDirectory>TestResults</ResultsDirectory>
-    <TargetPlatform>x64</TargetPlatform>
-    <MaxCpuCount>0</MaxCpuCount>
-  </RunConfiguration>
-
-  <DataCollectionRunSettings>
-
-    <DataCollectors>
-
-      <DataCollector friendlyName="XPlat code coverage">
-
-        <Configuration>
-
-          <!--
-            Coverage output format.
-            Cobertura works well with Azure DevOps.
-          -->
-          <Format>cobertura</Format>
-
-          <!--
-            ====================================================
-            EXCLUDE ASSEMBLIES
-            ====================================================
-
-            Excludes:
-              - All test projects
-              - All Microsoft assemblies
-              - Common third-party test libraries
-          -->
-          <Exclude>
-
-            [*Tests*]*,
-
-            [Microsoft.*]*,
-
-            [xunit*]*,
-            [FluentAssertions*]*,
-            [Moq*]*,
-            [coverlet*]*
-
-          </Exclude>
-
-          <!--
-            ====================================================
-            EXCLUDE FILES
-            ====================================================
-
-            Excludes:
-              - Program.cs
-              - generated files
-              - obj/bin folders
-              - migrations
-          -->
-          <ExcludeByFile>
-
-            **/Program.cs,
-
-            **/bin/**,
-
-            **/obj/**,
-
-            **/*.g.cs,
-
-            **/*.generated.cs,
-
-            **/*Designer.cs,
-
-            **/Migrations/**
-
-          </ExcludeByFile>
-
-          <!--
-            ====================================================
-            EXCLUDE ATTRIBUTES
-            ====================================================
-          -->
-          <ExcludeByAttribute>
-
-            Obsolete,
-
-            GeneratedCodeAttribute,
-
-            CompilerGeneratedAttribute,
-
-            ExcludeFromCodeCoverageAttribute
-
-          </ExcludeByAttribute>
-
-          <!--
-            Recommended defaults
-          -->
-          <IncludeTestAssembly>false</IncludeTestAssembly>
-
-          <SingleHit>false</SingleHit>
-
-          <SkipAutoProps>true</SkipAutoProps>
-
-          <DeterministicReport>true</DeterministicReport>
-
-          <UseSourceLink>true</UseSourceLink>
-
-        </Configuration>
-
-      </DataCollector>
-
-    </DataCollectors>
-
-  </DataCollectionRunSettings>
-
-</RunSettings>
+```razor
+@attribute [Authorize(Roles = "Role4")]
 ```
+
+And:
+
+```csharp
+if (user.IsInRole("Role4"))
+{
+    // allowed
+}
+else
+{
+    // denied
+}
+```
+
+Your configuration remains:
+
+```json
+{
+  "Auth": {
+    "Groups": {
+      "DOMAIN\\AdGroup1": [ "Role1", "Role4" ],
+      "DOMAIN\\AdGroup2": [ "Role1", "Role2" ],
+      "DOMAIN\\AdGroup3": [ "Role3" ]
+    }
+  }
+}
+```
+=============================================================================================================
+
+In Blazor, once your AD groups have been transformed into role claims, the cleanest way is to use `AuthorizeView`.
+
+# Show UI for Specific Roles
+
+```razor id="ojwwlw"
+<AuthorizeView Roles="Role4">
+
+    <Authorized>
+
+        <button class="btn btn-danger">
+            Admin Action
+        </button>
+
+    </Authorized>
+
+</AuthorizeView>
+```
+
+Only users with:
+
+```text id="cqf6fj"
+Role4
+```
+
+will see that content.
+
+---
+
+# Multiple Roles
+
+```razor id="r1cbyy"
+<AuthorizeView Roles="Role1,Role2">
+
+    <Authorized>
+
+        <ReportsPanel />
+
+    </Authorized>
+
+</AuthorizeView>
+```
+
+This means:
+
+```text id="yqf82i"
+Role1 OR Role2
+```
+
+---
+
+# Show Alternative Content
+
+```razor id="ebc2sx"
+<AuthorizeView Roles="Role4">
+
+    <Authorized>
+
+        <AdminPanel />
+
+    </Authorized>
+
+    <NotAuthorized>
+
+        <p>
+            You do not have access to this section.
+        </p>
+
+    </NotAuthorized>
+
+</AuthorizeView>
+```
+
+---
+
+# Manual Checks
+
+Sometimes you want more complex logic.
+
+```razor id="uc9rkf"
+@inject AuthenticationStateProvider AuthProvider
+
+@if (canEdit)
+{
+    <button class="btn btn-primary">
+        Edit
+    </button>
+}
+
+@code {
+
+    private bool canEdit;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState =
+            await AuthProvider.GetAuthenticationStateAsync();
+
+        var user = authState.User;
+
+        if (user.IsInRole("Role4"))
+        {
+            canEdit = true;
+        }
+    }
+}
+```
+
+---
+
+# Recommended Pattern
+
+## Use:
+
+| Scenario               | Recommendation    |
+| ---------------------- | ----------------- |
+| Hide/show simple UI    | `AuthorizeView`   |
+| Complex business logic | `user.IsInRole()` |
+| Entire page security   | `[Authorize]`     |
+
+---
+
+# Entire Page Restriction
+
+```razor id="f6g5ij"
+@attribute [Authorize(Roles = "Role4")]
+```
+
+This blocks access completely.
+
+---
+
+# Example Enterprise Usage
+
+```razor id="7j01w5"
+<h3>Finance Dashboard</h3>
+
+<AuthorizeView Roles="Role1">
+
+    <Authorized>
+
+        <FinanceReports />
+
+    </Authorized>
+
+</AuthorizeView>
+
+<AuthorizeView Roles="Role4">
+
+    <Authorized>
+
+        <AdminControls />
+
+    </Authorized>
+
+</AuthorizeView>
+```
+
+Because your claims transformation already maps:
+
+```text id="n1k5vu"
+AD Groups → Roles
+```
+
+everything works natively with Blazor authorization.
+=======================================================
+
+That’s a good approach. In enterprise apps it’s common to move authentication/authorization registration into extension methods or middleware setup classes to keep `Program.cs` clean.
+
+A typical structure would look like this:
+
+# Program.cs
+
+```csharp id="9x0s9v"
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddApplicationAuthentication(
+    builder.Configuration);
+
+builder.Services.AddApplicationAuthorization(
+    builder.Configuration);
+
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+
+var app = builder.Build();
+
+app.UseApplicationSecurity();
+
+app.MapRazorComponents<App>();
+
+app.Run();
+```
+
+---
+
+# Service Registration Extensions
+
+## `AuthenticationExtensions.cs`
+
+```csharp id="zbyr9j"
+using Microsoft.AspNetCore.Authentication.Negotiate;
+
+public static class AuthenticationExtensions
+{
+    public static IServiceCollection
+        AddApplicationAuthentication(
+            this IServiceCollection services,
+            IConfiguration configuration)
+    {
+        services
+            .AddAuthentication(
+                NegotiateDefaults.AuthenticationScheme)
+            .AddNegotiate();
+
+        services.AddAuthorization();
+
+        services.Configure<AuthOptions>(
+            configuration.GetSection("Auth"));
+
+        services.AddScoped<IAdService, AdService>();
+
+        services.AddTransient<IClaimsTransformation,
+            AdClaimsTransformation>();
+
+        return services;
+    }
+}
+```
+
+---
+
+# Middleware Pipeline Extensions
+
+## `ApplicationBuilderExtensions.cs`
+
+```csharp id="c9v11x"
+public static class ApplicationBuilderExtensions
+{
+    public static IApplicationBuilder
+        UseApplicationSecurity(
+            this IApplicationBuilder app)
+    {
+        app.UseAuthentication();
+
+        app.UseAuthorization();
+
+        return app;
+    }
+}
+```
+
+---
+
+# Claims Transformation
+
+## `AdClaimsTransformation.cs`
+
+```csharp id="vyls8k"
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Options;
+using System.Security.Claims;
+
+public class AdClaimsTransformation
+    : IClaimsTransformation
+{
+    private readonly IAdService _adService;
+    private readonly AuthOptions _options;
+
+    public AdClaimsTransformation(
+        IAdService adService,
+        IOptions<AuthOptions> options)
+    {
+        _adService = adService;
+        _options = options.Value;
+    }
+
+    public Task<ClaimsPrincipal> TransformAsync(
+        ClaimsPrincipal principal)
+    {
+        if (principal.Identity is not ClaimsIdentity identity)
+        {
+            return Task.FromResult(principal);
+        }
+
+        if (!identity.IsAuthenticated)
+        {
+            return Task.FromResult(principal);
+        }
+
+        if (identity.Claims.Any(
+                c => c.Type == ClaimTypes.Role))
+        {
+            return Task.FromResult(principal);
+        }
+
+        var username = identity.Name;
+
+        if (string.IsNullOrWhiteSpace(username))
+        {
+            return Task.FromResult(principal);
+        }
+
+        var userGroups =
+            _adService.GetUserGroups(username);
+
+        var roles = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var mapping in _options.Groups)
+        {
+            var adGroup = mapping.Key;
+            var mappedRoles = mapping.Value;
+
+            if (userGroups.Contains(
+                    adGroup,
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                foreach (var role in mappedRoles)
+                {
+                    roles.Add(role);
+                }
+            }
+        }
+
+        foreach (var role in roles)
+        {
+            identity.AddClaim(
+                new Claim(
+                    ClaimTypes.Role,
+                    role));
+        }
+
+        return Task.FromResult(principal);
+    }
+}
+```
+
+---
+
+# Config
+
+## appsettings.json
+
+```json id="92drh3"
+{
+  "Auth": {
+    "Groups": {
+      "DOMAIN\\AdGroup1": [ "Role1", "Role4" ],
+      "DOMAIN\\AdGroup2": [ "Role1", "Role2" ],
+      "DOMAIN\\AdGroup3": [ "Role3" ]
+    }
+  }
+}
+```
+
+---
+
+# Then Usage Becomes Native Everywhere
+
+## Entire Page
+
+```razor id="yjskot"
+@attribute [Authorize(Roles = "Role4")]
+```
+
+---
+
+## Partial UI
+
+```razor id="8z1tjt"
+<AuthorizeView Roles="Role4">
+
+    <Authorized>
+
+        <AdminPanel />
+
+    </Authorized>
+
+</AuthorizeView>
+```
+
+---
+
+## Manual Checks
+
+```csharp id="j6jlwm"
+if (user.IsInRole("Role4"))
+    // allowed
+}
+```
+
+---
+
+# This Is the Ideal Separation
+
+| Layer                 | Responsibility          |
+| --------------------- | ----------------------- |
+| Windows Auth          | User authentication     |
+| IClaimsTransformation | AD group → role mapping |
+| Config                | Authorization rules     |
+| Blazor                | UI enforcement          |
+
+That keeps the system clean, testable, and maintainable.
+===================================
+
+using Microsoft.AspNetCore.Authentication.Negotiate;
+
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims;
+dotnet add package Microsoft.Extensions.Caching.Memory
