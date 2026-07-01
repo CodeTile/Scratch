@@ -1,40 +1,61 @@
-Since your clients are using both UseDefaultCredentials = true (Kerberos/NTLM) and explicit NetworkCredential(username, password, domain) (Active Directory credentials), both clients are strictly performing Windows Authentication.
-Because both clients are using Windows Authentication, you do not need multiple authentication schemes (like JWT Bearer). Instead, you only need to configure Windows Authentication via the Negotiate handler to accept both current OS credentials and manually typed domain credentials.
-Here is the correct, highly streamlined configuration for your .NET 10 API.
-## 1. Install the Windows Auth Package
-Run this command in your API project directory:
+The complete updated instructions integrate native .NET 10 OpenAPI generation (which officially replaces Swashbuckle) alongside Swagger UI. [1, 2] 
+It also adds explicit Active Directory Domain Validation to protect your application from untrusted child domains and cross-forest requests, while registering Windows Authentication metadata so the Swagger UI displays the interactive "Authorize" lock mechanisms natively. [3] 
+## 1. Updated Project Dependencies (.csproj)
 
-dotnet add package Microsoft.AspNetCore.Authentication.Negotiate
+<ItemGroup>
+  <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.0.0" />
+  <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.0" />
+  <PackageReference Include="Swashbuckle.AspNetCore.SwaggerUi" Version="7.2.0" />
+  <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
+  <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
+  <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+</ItemGroup>
 
-## 2. Configure Program.cs
-You only need to register AddNegotiate and set it as the default authentication scheme.
+## 2. Updated Configuration (appsettings.json)
+Add an AllowedDomain property to specify your exact NetBIOS corporate domain name (e.g., CORPORATE).
 
-using Microsoft.AspNetCore.Authentication.Negotiate;
-var builder = WebApplication.CreateBuilder(args);
-// 1. Register Windows Authentication (Negotiate handles both NTLM and Kerberos)
-builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
-    .AddNegotiate();
-// 2. Add authorization services
-builder.Services.AddAuthorization();
+{
+  "Serilog": {
+    "MinimumLevel": {
+      "Default": "Information",
+      "Override": {
+        "Microsoft": "Warning",
+        "Microsoft.AspNetCore": "Warning",
+        "System": "Warning"
+      }
+    },
+    "WriteTo": [
+      { "Name": "Console" },
+      {
+        "Name": "File",
+        "Args": {
+          "path": "Logs/security-audit-.txt",
+          "rollingInterval": "Day"
+        }
+      }
+    ],
+    "Enrich": [ "FromLogContext" ]
+  },
+  "AllowedHosts": "*",
+  "AllowedDomain": "CORPORATE",
+  "RoleMappings": {
+    "Viewer": "CORPORATE\\AD_Group_Viewers_Internal, CORPORATE\\AD_Group_Viewers_Contractors",
+    "Editor": "CORPORATE\\AD_Group_Editors, CORPORATE\\AD_Content_Team",
+    "Auditor": "CORPORATE\\AD_Group_Auditors",
+    "Manager": "CORPORATE\\AD_Managers_Global, CORPORATE\\AD_Managers_Local",
+    "ServiceDesk": "CORPORATE\\AD_Group_ServiceDesk",
+    "Developer": "CORPORATE\\AD_Group_Developers, CORPORATE\\AD_Platform_Engineers"
+  }
+}
 
-builder.Services.AddControllers();
-var app = builder.Build();
-// 3. Keep the correct middleware order
-app.UseAuthentication();
-app.UseAuthorization();
-
-app.MapControllers();
-app.Run();
-
-## 3. Configure launchSettings.json (Crucial Step)
-For Windows Authentication to process the manual domain credentials correctly, Anonymous Authentication must be disabled so the server actively challenges the client for their Windows credentials.
-Update your Properties/launchSettings.json:
+## 3. Local Development Settings (Properties/launchSettings.json)
 
 {
   "profiles": {
     "http": {
       "commandName": "Project",
-      "launchBrowser": false,
+      "launchBrowser": true,
+      "launchUrl": "swagger",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       },
@@ -44,41 +65,267 @@ Update your Properties/launchSettings.json:
   }
 }
 
-(Note: If you deploy your API to IIS or Azure App Service, you must similarly go into the settings, turn Windows Authentication ON, and turn Anonymous Authentication OFF).
-## 4. Protect Your Controller
-Decorate your controller or individual endpoints with the standard [Authorize] attribute. .NET will automatically parse and validate the Windows user context into the User object.
+## 4. Complete Authorization Engine with Domain Validation (AuthorizationEngine.cs)
 
-using Microsoft.AspNetCore.Authorization;using Microsoft.AspNetCore.Mvc;
-
-[ApiController]
-[Route("api/[controller]")]
-[Authorize] // Enforces Windows Authentication automaticallypublic class AuthCheckController : ControllerBase
+using Microsoft.AspNetCore.Authorization;using Microsoft.AspNetCore.Http;using Microsoft.Extensions.Configuration;using Microsoft.Extensions.Logging;using Microsoft.Extensions.Options;using System.Security.Claims;
+namespace YourApi.Authorization;
+public enum ApiRole
 {
-    [HttpGet("test")]
-    public IActionResult CheckCredentials()
-    {
-        // Extracts the authenticated identity (Domain\Username)
-        var identityName = User.Identity?.Name; 
-        var isAuth = User.Identity?.IsAuthenticated ?? false;
+    None = 0,
+    Viewer = 10,
+    Editor = 20,
+    Auditor = 30,
+    Manager = 40,
+    ServiceDesk = 50,
+    Developer = 60
+}
 
-        return Ok(new
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class, AllowMultiple = false, Inherited = true)]public class MinimumRoleAttribute : AuthorizeAttribute
+{
+    public const string PolicyPrefix = "MinimumRole:";
+
+    public MinimumRoleAttribute(ApiRole role)
+    {
+        Policy = $"{PolicyPrefix}{role}";
+    }
+}
+public class MinimumRoleRequirement(ApiRole minimumRole) : IAuthorizationRequirement
+{
+    public ApiRole MinimumRole { get; } = minimumRole;
+}
+public class DynamicRolePolicyProvider(IOptions<AuthorizationOptions> options) : DefaultAuthorizationPolicyProvider(options)
+{
+    public override async Task<AuthorizationPolicy?> GetPolicyAsync(string policyName)
+    {
+        if (policyName.StartsWith(MinimumRoleAttribute.PolicyPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            Status = "Access Granted",
-            WindowsUser = identityName,
-            IsAuthenticated = isAuth
-        });
+            var roleStr = policyName[MinimumRoleAttribute.PolicyPrefix.Length..];
+            
+            if (Enum.TryParse<ApiRole>(roleStr, true, out var role))
+            {
+                var policy = new AuthorizationPolicyBuilder();
+                policy.AddRequirements(new MinimumRoleRequirement(role));
+                return policy.Build();
+            }
+        }
+
+        return await base.GetPolicyAsync(policyName);
+    }
+}
+public class MinimumRoleHandler : AuthorizationHandler<MinimumRoleRequirement>
+{
+    private readonly Dictionary<ApiRole, string[]> _roleGroupsLookup = new();
+    private readonly string _allowedDomain;
+    private readonly ILogger<MinimumRoleHandler> _logger;
+    private readonly IHttpContextAccessor _httpContextAccessor;
+
+    public MinimumRoleHandler(
+        IConfiguration configuration, 
+        ILogger<MinimumRoleHandler> logger,
+        IHttpContextAccessor httpContextAccessor)
+    {
+        _logger = logger;
+        _httpContextAccessor = httpContextAccessor;
+        _allowedDomain = configuration["AllowedDomain"] ?? string.Empty;
+
+        foreach (ApiRole role in Enum.GetValues<ApiRole>())
+        {
+            string? rawAdGroups = configuration[$"RoleMappings:{role}"];
+            if (!string.IsNullOrEmpty(rawAdGroups))
+            {
+                string[] cleanGroups = rawAdGroups.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                _roleGroupsLookup[role] = cleanGroups;
+            }
+        }
+    }
+
+    protected override Task HandleRequirementAsync(AuthorizationHandlerContext context, MinimumRoleRequirement requirement)
+    {
+        var username = context.User.Identity?.Name ?? "Anonymous";
+
+        if (context.User.Identity is not { IsAuthenticated: true })
+        {
+            _logger.LogWarning("Access Denied: Unauthenticated access attempt by {Username}.", username);
+            return Task.CompletedTask;
+        }
+
+        // Domain Filtering Validation Check
+        if (!string.IsNullOrEmpty(_allowedDomain) && username.Contains('\\'))
+        {
+            var userDomain = username.Split('\\')[0];
+            if (!string.Equals(userDomain, _allowedDomain, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogCritical("Security Alert: User '{Username}' from an untrusted domain '{UserDomain}' attempted access. Expected domain was '{AllowedDomain}'.", 
+                    username, userDomain, _allowedDomain);
+                
+                LogAccessDenied(context, requirement, username, "Untrusted Domain Source Context");
+                return Task.CompletedTask; // Abort instantly without verifying any AD group credentials
+            }
+        }
+
+        foreach (ApiRole role in Enum.GetValues<ApiRole>())
+        {
+            if (role >= requirement.MinimumRole)
+            {
+                if (_roleGroupsLookup.TryGetValue(role, out var adGroups))
+                {
+                    foreach (var group in adGroups)
+                    {
+                        if (context.User.IsInRole(group))
+                        {
+                            context.Succeed(requirement);
+                            return Task.CompletedTask;
+                        }
+                    }
+                }
+            }
+        }
+
+        LogAccessDenied(context, requirement, username, "Insufficient Permissions / Missing Active Directory Group Membership");
+        return Task.CompletedTask;
+    }
+
+    private void LogAccessDenied(AuthorizationHandlerContext context, MinimumRoleRequirement requirement, string username, string reason)
+    {
+        var httpContext = _httpContextAccessor.HttpContext;
+        var requestPath = httpContext?.Request.Path.Value ?? "Unknown Path";
+        var httpMethod = httpContext?.Request.Method ?? "UNKNOWN";
+
+        var userAdGroups = context.User.Claims
+            .Where(c => c.Type == ClaimTypes.GroupSid || c.Type == "http://microsoft.com")
+            .Select(c => c.Value)
+            .ToList();
+
+        _logger.LogWarning(
+            "Access Denied: User {Username} failed authorization rules for endpoint {HttpMethod} {RequestPath}. " +
+            "Reason: {DenialReason}. " +
+            "Required minimum role was {RequiredRole} ({RequiredValue}). " +
+            "Assigned User SIDs: {UserGroupSIDs}",
+            username,
+            httpMethod,
+            requestPath,
+            reason,
+            requirement.MinimumRole,
+            (int)requirement.MinimumRole,
+            userAdGroups
+        );
     }
 }
 
-## Why this works for both of your client setups:
+## 5. Application Startup (Program.cs)
 
-* Client 1 (UseDefaultCredentials = true): The client automatically sends the logged-in Windows user's Kerberos or NTLM token. The API verifies it against the current domain.
-* Client 2 (NetworkCredential): The client sends a challenge response using the explicit username, password, and domain you provided. Because your API has AddNegotiate() active and Anonymous turned off, it validates those domain credentials directly against Active Directory.
+using Microsoft.AspNetCore.Authentication.Negotiate;using Microsoft.AspNetCore.Authorization;using Microsoft.OpenApi.Models;using Serilog;using YourApi.Authorization;
+var builder = WebApplication.CreateBuilder(args);
+
+Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(builder.Configuration)
+    .CreateLogger();
+
+builder.Host.UseSerilog();
+
+builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
+    .AddNegotiate();
+// .NET 10 Native OpenAPI Document Generation Configuration
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer((document, context, cancellationToken) =>
+    {
+        document.Info = new OpenApiInfo
+        {
+            Title = "Secure Windows Authentication API System",
+            Version = "v1",
+            Description = "Corporate Intranet Services API Engine with Hierarchical Role Controls"
+        };
+
+        // Inject Native Windows HTTP Security Schemes into the OpenAPI specification
+        document.Components ??= new OpenApiComponents();
+        document.Components.SecuritySchemes.Add("WindowsAuth", new OpenApiSecurityScheme
+        {
+            Type = SecuritySchemeType.Http,
+            Scheme = "negotiate",
+            Description = "Natively prompts for your local corporate Windows Domain OS profile credentials automatically."
+        });
+
+        document.SecurityRequirements.Add(new OpenApiSecurityRequirement
+        {
+            {
+                new OpenApiSecurityScheme
+                {
+                    Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "WindowsAuth" }
+                },
+                Array.Empty<string>()
+            }
+        });
+
+        return Task.CompletedTask;
+    });
+});
+
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<IAuthorizationPolicyProvider, DynamicRolePolicyProvider>();
+builder.Services.AddScoped<IAuthorizationHandler, MinimumRoleHandler>();
+
+builder.Services.AddControllers();
+var app = builder.Build();
+
+app.UseSerilogRequestLogging();
+if (app.Environment.IsDevelopment())
+{
+    // Map the Native OpenAPI spec generation endpoint route
+    app.MapOpenApi();
+    
+    // Serve up the interactive Swagger UI interface sourced from the native OpenAPI document configuration
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/openapi/v1.json", "Secure API Systems v1 Specification Metadata");
+        options.RoutePrefix = "swagger";
+    });
+}
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
+try
+{
+    Log.Information("Starting API Engine Host...");
+    app.Run();
+}catch (Exception ex)
+{
+    Log.Fatal(ex, "API Engine Host terminated unexpectedly");
+}finally
+{
+    Log.CloseAndFlush();
+}
+
+## 6. Implementation Controller Example (DataController.cs)
+
+using Microsoft.AspNetCore.Mvc;using YourApi.Authorization;
+namespace YourApi.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]public class DataController : ControllerBase
+{
+    [HttpGet("dashboard")]
+    [MinimumRole(ApiRole.Viewer)]
+    public IActionResult GetDashboard() => Ok(new { Data = "Dashboard payload metrics delivered securely." });
+
+    [HttpPost("settings")]
+    [MinimumRole(ApiRole.Manager)]
+    public IActionResult UpdateSettings() => Ok(new { Status = "Application settings saved successfully." });
+
+    [HttpPost("purge")]
+    [MinimumRole(ApiRole.Developer)]
+    public IActionResult PurgeSystem() => Ok(new { Output = "System core cache purged effectively." });
+}
 
 ------------------------------
-If you are interested, let me know:
+If you'd like, let me know:
 
-* Is your API server hosted on Windows (IIS) or a Linux/Docker environment? (Linux setups require extra active directory/keytab configuration).
-* Do you need to restrict access to a specific Active Directory Group? (e.g. [Authorize(Roles = @"DOMAIN\YourGroup")])
+* Do you need to build dynamic Frontend UI Visibility logic where you expose an endpoint that tells the UI what the user's maximum calculated role rank is?
+* Do you want to filter claims validation further to isolate checks using Active Directory Group SIDs instead of human-readable text strings?
 
 
+[1] [https://devblogs.microsoft.com](https://devblogs.microsoft.com/dotnet/dotnet9-openapi/)
+[2] [https://imzihad21.github.io](https://imzihad21.github.io/articles/a/net-9-dropped-swashbuckle-but-you-can-still-keep-swagger-ui-backed-by-openapi-50j3/)
+[3] [https://adolfi.dev](https://adolfi.dev/blog/adding-an-api-security-definition-and-requirement-using-swagger-ui/)
