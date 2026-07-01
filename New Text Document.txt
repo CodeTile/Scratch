@@ -329,3 +329,146 @@ If you'd like, let me know:
 [1] [https://devblogs.microsoft.com](https://devblogs.microsoft.com/dotnet/dotnet9-openapi/)
 [2] [https://imzihad21.github.io](https://imzihad21.github.io/articles/a/net-9-dropped-swashbuckle-but-you-can-still-keep-swagger-ui-backed-by-openapi-50j3/)
 [3] [https://adolfi.dev](https://adolfi.dev/blog/adding-an-api-security-definition-and-requirement-using-swagger-ui/)
+==============================================
+
+To obscure the existence of secure endpoints from unauthorized users, you can intercept the authorization failure and rewrite the standard 403 Forbidden or 401 Unauthorized responses into a standard 404 Not Found response. [1, 2] 
+In ASP.NET Core, the cleanest way to do this without bypassing the native authorization pipelines is by creating a custom Authorization Middleware Result Handler. This intercepts the decision after your MinimumRoleHandler finishes evaluation, checks if the user failed validation, and swaps the response payload on the fly.
+Here are the code blocks ready to be cut and pasted into your project.
+## 1. Create the Custom Middleware Result Handler (ForbiddenToNotFoundHandler.cs)
+Create a new file named ForbiddenToNotFoundHandler.cs and paste this code. It safely converts any authorization failure into a clean 404 Not Found response sent to the client, while keeping your internal Serilog warnings fully accurate.
+
+using Microsoft.AspNetCore.Authorization;using Microsoft.AspNetCore.Authorization.Policy;using Microsoft.AspNetCore.Http;
+namespace YourApi.Authorization;
+public class ForbiddenToNotFoundHandler : IAuthorizationMiddlewareResultHandler
+{
+    private readonly AuthorizationMiddlewareResultHandler _defaultHandler = new();
+
+    public async Task HandleAsync(
+        RequestDelegate next,
+        HttpContext context,
+        AuthorizationPolicy policy,
+        PolicyAuthorizationResult authorizeResult)
+    {
+        // Check if the authorization evaluation failed (either unauthenticated or lacked required groups)
+        if (authorizeResult.Challenged || authorizeResult.Forbidden)
+        {
+            // Override the response status to 404 Not Found
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            
+            // Optional: Provide a clean, generic JSON payload matching a standard resource lookup failure
+            context.Response.ContentType = "application/json";
+            await context.Response.WriteAsJsonAsync(new 
+            { 
+                Status = 404, 
+                Error = "Not Found", 
+                Message = "The requested resource could not be found on this server." 
+            });
+            
+            return; // Short-circuit the request pipeline instantly
+        }
+
+        // If authorization succeeded, let the request flow through to the controller naturally
+        await _defaultHandler.HandleAsync(next, context, policy, authorizeResult);
+    }
+}
+
+## 2. Update Application Startup (Program.cs)
+Register your new result handler into your Dependency Injection container. It will automatically override the default framework behavior.
+
+using Microsoft.AspNetCore.Authentication.Negotiate;using Microsoft.AspNetCore.Authorization;using Microsoft.OpenApi.Models;using Serilog;using YourApi.Authorization;
+var builder = WebApplication.CreateBuilder(args);
+
+Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(builder.Configuration)
+    .CreateLogger();
+
+builder.Host.UseSerilog();
+
+builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
+    .AddNegotiate();
+
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer((document, context, cancellationToken) =>
+    {
+        document.Info = new OpenApiInfo
+        {
+            Title = "Secure Windows Authentication API System",
+            Version = "v1",
+            Description = "Corporate Intranet Services API Engine with Hierarchical Role Controls"
+        };
+
+        document.Components ??= new OpenApiComponents();
+        document.Components.SecuritySchemes.Add("WindowsAuth", new OpenApiSecurityScheme
+        {
+            Type = SecuritySchemeType.Http,
+            Scheme = "negotiate",
+            Description = "Natively prompts for your local corporate Windows Domain OS profile credentials automatically."
+        });
+
+        document.SecurityRequirements.Add(new OpenApiSecurityRequirement
+        {
+            {
+                new OpenApiSecurityScheme
+                {
+                    Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "WindowsAuth" }
+                },
+                Array.Empty<string>()
+            }
+        });
+
+        return Task.CompletedTask;
+    });
+});
+
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<IAuthorizationPolicyProvider, DynamicRolePolicyProvider>();
+builder.Services.AddScoped<IAuthorizationHandler, MinimumRoleHandler>();
+// Register the custom result handler to convert 401/403 errors into 404 errors seamlessly
+builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, ForbiddenToNotFoundHandler>();
+
+builder.Services.AddControllers();
+var app = builder.Build();
+
+app.UseSerilogRequestLogging();
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/openapi/v1.json", "Secure API Systems v1 Specification Metadata");
+        options.RoutePrefix = "swagger";
+    });
+}
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
+try
+{
+    Log.Information("Starting API Engine Host...");
+    app.Run();
+}catch (Exception ex)
+{
+    Log.Fatal(ex, "API Engine Host terminated unexpectedly");
+}finally
+{
+    Log.CloseAndFlush();
+}
+
+## Why this approach is optimal:
+
+   1. Perfect Obscurity: External malicious actors or unauthorized employees probing your internal API paths will receive a standard 404 Not Found response. They will have no idea whether the endpoint exists or if they simply lack permissions. [3] 
+   2. Uncompromised Auditing: Your Serilog audit files will still log the specific details via the MinimumRoleHandler (e.g., "Access Denied: User DOMAIN\jdoe failed authorization rules for endpoint POST /api/data/purge"). Your internal administrators retain clear security visibility while keeping the outside client completely in the dark.
+
+------------------------------
+If you'd like, let me know:
+
+* Do you also want to obscure your Swagger UI endpoint so it is completely inaccessible unless a user is authenticated on the domain first?
+* Do you need to apply this 404 status masking logic exclusively to specific high-security roles (like Developer) while letting standard users see a normal 403 on common dashboard elements?
+
+
+[1] [https://medium.com](https://medium.com/@joabi/access-control-its-not-just-about-unauthorized-and-forbidden-responses-2d45d5a514aa)
+[2] [https://www.abstractapi.com](https://www.abstractapi.com/guides/http-status-codes/403)
+[3] [https://github.com](https://github.com/fsspec/s3fs/issues/591)
