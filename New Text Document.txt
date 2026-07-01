@@ -1,529 +1,84 @@
-Understood. Here’s the regenerated claims transformation example using explicit braces on all `if`, `foreach`, and similar statements.
+Since your clients are using both UseDefaultCredentials = true (Kerberos/NTLM) and explicit NetworkCredential(username, password, domain) (Active Directory credentials), both clients are strictly performing Windows Authentication.
+Because both clients are using Windows Authentication, you do not need multiple authentication schemes (like JWT Bearer). Instead, you only need to configure Windows Authentication via the Negotiate handler to accept both current OS credentials and manually typed domain credentials.
+Here is the correct, highly streamlined configuration for your .NET 10 API.
+## 1. Install the Windows Auth Package
+Run this command in your API project directory:
 
-## `AdClaimsTransformation.cs`
+dotnet add package Microsoft.AspNetCore.Authentication.Negotiate
 
-```csharp
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.Extensions.Options;
-using System.Security.Claims;
+## 2. Configure Program.cs
+You only need to register AddNegotiate and set it as the default authentication scheme.
 
-public class AdClaimsTransformation
-    : IClaimsTransformation
-{
-    private readonly IAdService _adService;
-    private readonly AuthOptions _options;
-
-    public AdClaimsTransformation(
-        IAdService adService,
-        IOptions<AuthOptions> options)
-    {
-        _adService = adService;
-        _options = options.Value;
-    }
-
-    public Task<ClaimsPrincipal> TransformAsync(
-        ClaimsPrincipal principal)
-    {
-        if (principal.Identity is not ClaimsIdentity identity)
-        {
-            return Task.FromResult(principal);
-        }
-
-        if (!identity.IsAuthenticated)
-        {
-            return Task.FromResult(principal);
-        }
-
-        // Prevent duplicate claims
-        if (identity.Claims.Any(c => c.Type == ClaimTypes.Role))
-        {
-            return Task.FromResult(principal);
-        }
-
-        var username = identity.Name;
-
-        if (string.IsNullOrWhiteSpace(username))
-        {
-            return Task.FromResult(principal);
-        }
-
-        var userGroups =
-            _adService.GetUserGroups(username);
-
-        var roles = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase);
-
-        foreach (var mapping in _options.Groups)
-        {
-            var adGroup = mapping.Key;
-            var mappedRoles = mapping.Value;
-
-            if (userGroups.Contains(
-                    adGroup,
-                    StringComparer.OrdinalIgnoreCase))
-            {
-                foreach (var role in mappedRoles)
-                {
-                    roles.Add(role);
-                }
-            }
-        }
-
-        foreach (var role in roles)
-        {
-            identity.AddClaim(
-                new Claim(
-                    ClaimTypes.Role,
-                    role));
-        }
-
-        return Task.FromResult(principal);
-    }
-}
-```
-
-Example usage:
-
-```razor
-@attribute [Authorize(Roles = "Role4")]
-```
-
-And:
-
-```csharp
-if (user.IsInRole("Role4"))
-{
-    // allowed
-}
-else
-{
-    // denied
-}
-```
-
-Your configuration remains:
-
-```json
-{
-  "Auth": {
-    "Groups": {
-      "DOMAIN\\AdGroup1": [ "Role1", "Role4" ],
-      "DOMAIN\\AdGroup2": [ "Role1", "Role2" ],
-      "DOMAIN\\AdGroup3": [ "Role3" ]
-    }
-  }
-}
-```
-=============================================================================================================
-
-In Blazor, once your AD groups have been transformed into role claims, the cleanest way is to use `AuthorizeView`.
-
-# Show UI for Specific Roles
-
-```razor id="ojwwlw"
-<AuthorizeView Roles="Role4">
-
-    <Authorized>
-
-        <button class="btn btn-danger">
-            Admin Action
-        </button>
-
-    </Authorized>
-
-</AuthorizeView>
-```
-
-Only users with:
-
-```text id="cqf6fj"
-Role4
-```
-
-will see that content.
-
----
-
-# Multiple Roles
-
-```razor id="r1cbyy"
-<AuthorizeView Roles="Role1,Role2">
-
-    <Authorized>
-
-        <ReportsPanel />
-
-    </Authorized>
-
-</AuthorizeView>
-```
-
-This means:
-
-```text id="yqf82i"
-Role1 OR Role2
-```
-
----
-
-# Show Alternative Content
-
-```razor id="ebc2sx"
-<AuthorizeView Roles="Role4">
-
-    <Authorized>
-
-        <AdminPanel />
-
-    </Authorized>
-
-    <NotAuthorized>
-
-        <p>
-            You do not have access to this section.
-        </p>
-
-    </NotAuthorized>
-
-</AuthorizeView>
-```
-
----
-
-# Manual Checks
-
-Sometimes you want more complex logic.
-
-```razor id="uc9rkf"
-@inject AuthenticationStateProvider AuthProvider
-
-@if (canEdit)
-{
-    <button class="btn btn-primary">
-        Edit
-    </button>
-}
-
-@code {
-
-    private bool canEdit;
-
-    protected override async Task OnInitializedAsync()
-    {
-        var authState =
-            await AuthProvider.GetAuthenticationStateAsync();
-
-        var user = authState.User;
-
-        if (user.IsInRole("Role4"))
-        {
-            canEdit = true;
-        }
-    }
-}
-```
-
----
-
-# Recommended Pattern
-
-## Use:
-
-| Scenario               | Recommendation    |
-| ---------------------- | ----------------- |
-| Hide/show simple UI    | `AuthorizeView`   |
-| Complex business logic | `user.IsInRole()` |
-| Entire page security   | `[Authorize]`     |
-
----
-
-# Entire Page Restriction
-
-```razor id="f6g5ij"
-@attribute [Authorize(Roles = "Role4")]
-```
-
-This blocks access completely.
-
----
-
-# Example Enterprise Usage
-
-```razor id="7j01w5"
-<h3>Finance Dashboard</h3>
-
-<AuthorizeView Roles="Role1">
-
-    <Authorized>
-
-        <FinanceReports />
-
-    </Authorized>
-
-</AuthorizeView>
-
-<AuthorizeView Roles="Role4">
-
-    <Authorized>
-
-        <AdminControls />
-
-    </Authorized>
-
-</AuthorizeView>
-```
-
-Because your claims transformation already maps:
-
-```text id="n1k5vu"
-AD Groups → Roles
-```
-
-everything works natively with Blazor authorization.
-=======================================================
-
-That’s a good approach. In enterprise apps it’s common to move authentication/authorization registration into extension methods or middleware setup classes to keep `Program.cs` clean.
-
-A typical structure would look like this:
-
-# Program.cs
-
-```csharp id="9x0s9v"
+using Microsoft.AspNetCore.Authentication.Negotiate;
 var builder = WebApplication.CreateBuilder(args);
+// 1. Register Windows Authentication (Negotiate handles both NTLM and Kerberos)
+builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
+    .AddNegotiate();
+// 2. Add authorization services
+builder.Services.AddAuthorization();
 
-builder.Services.AddApplicationAuthentication(
-    builder.Configuration);
-
-builder.Services.AddApplicationAuthorization(
-    builder.Configuration);
-
-builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
-
+builder.Services.AddControllers();
 var app = builder.Build();
+// 3. Keep the correct middleware order
+app.UseAuthentication();
+app.UseAuthorization();
 
-app.UseApplicationSecurity();
-
-app.MapRazorComponents<App>();
-
+app.MapControllers();
 app.Run();
-```
 
----
+## 3. Configure launchSettings.json (Crucial Step)
+For Windows Authentication to process the manual domain credentials correctly, Anonymous Authentication must be disabled so the server actively challenges the client for their Windows credentials.
+Update your Properties/launchSettings.json:
 
-# Service Registration Extensions
-
-## `AuthenticationExtensions.cs`
-
-```csharp id="zbyr9j"
-using Microsoft.AspNetCore.Authentication.Negotiate;
-
-public static class AuthenticationExtensions
 {
-    public static IServiceCollection
-        AddApplicationAuthentication(
-            this IServiceCollection services,
-            IConfiguration configuration)
-    {
-        services
-            .AddAuthentication(
-                NegotiateDefaults.AuthenticationScheme)
-            .AddNegotiate();
-
-        services.AddAuthorization();
-
-        services.Configure<AuthOptions>(
-            configuration.GetSection("Auth"));
-
-        services.AddScoped<IAdService, AdService>();
-
-        services.AddTransient<IClaimsTransformation,
-            AdClaimsTransformation>();
-
-        return services;
-    }
-}
-```
-
----
-
-# Middleware Pipeline Extensions
-
-## `ApplicationBuilderExtensions.cs`
-
-```csharp id="c9v11x"
-public static class ApplicationBuilderExtensions
-{
-    public static IApplicationBuilder
-        UseApplicationSecurity(
-            this IApplicationBuilder app)
-    {
-        app.UseAuthentication();
-
-        app.UseAuthorization();
-
-        return app;
-    }
-}
-```
-
----
-
-# Claims Transformation
-
-## `AdClaimsTransformation.cs`
-
-```csharp id="vyls8k"
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.Extensions.Options;
-using System.Security.Claims;
-
-public class AdClaimsTransformation
-    : IClaimsTransformation
-{
-    private readonly IAdService _adService;
-    private readonly AuthOptions _options;
-
-    public AdClaimsTransformation(
-        IAdService adService,
-        IOptions<AuthOptions> options)
-    {
-        _adService = adService;
-        _options = options.Value;
-    }
-
-    public Task<ClaimsPrincipal> TransformAsync(
-        ClaimsPrincipal principal)
-    {
-        if (principal.Identity is not ClaimsIdentity identity)
-        {
-            return Task.FromResult(principal);
-        }
-
-        if (!identity.IsAuthenticated)
-        {
-            return Task.FromResult(principal);
-        }
-
-        if (identity.Claims.Any(
-                c => c.Type == ClaimTypes.Role))
-        {
-            return Task.FromResult(principal);
-        }
-
-        var username = identity.Name;
-
-        if (string.IsNullOrWhiteSpace(username))
-        {
-            return Task.FromResult(principal);
-        }
-
-        var userGroups =
-            _adService.GetUserGroups(username);
-
-        var roles = new HashSet<string>(
-            StringComparer.OrdinalIgnoreCase);
-
-        foreach (var mapping in _options.Groups)
-        {
-            var adGroup = mapping.Key;
-            var mappedRoles = mapping.Value;
-
-            if (userGroups.Contains(
-                    adGroup,
-                    StringComparer.OrdinalIgnoreCase))
-            {
-                foreach (var role in mappedRoles)
-                {
-                    roles.Add(role);
-                }
-            }
-        }
-
-        foreach (var role in roles)
-        {
-            identity.AddClaim(
-                new Claim(
-                    ClaimTypes.Role,
-                    role));
-        }
-
-        return Task.FromResult(principal);
-    }
-}
-```
-
----
-
-# Config
-
-## appsettings.json
-
-```json id="92drh3"
-{
-  "Auth": {
-    "Groups": {
-      "DOMAIN\\AdGroup1": [ "Role1", "Role4" ],
-      "DOMAIN\\AdGroup2": [ "Role1", "Role2" ],
-      "DOMAIN\\AdGroup3": [ "Role3" ]
+  "profiles": {
+    "http": {
+      "commandName": "Project",
+      "launchBrowser": false,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "windowsAuthentication": true,
+      "anonymousAuthentication": false
     }
   }
 }
-```
 
----
+(Note: If you deploy your API to IIS or Azure App Service, you must similarly go into the settings, turn Windows Authentication ON, and turn Anonymous Authentication OFF).
+## 4. Protect Your Controller
+Decorate your controller or individual endpoints with the standard [Authorize] attribute. .NET will automatically parse and validate the Windows user context into the User object.
 
-# Then Usage Becomes Native Everywhere
+using Microsoft.AspNetCore.Authorization;using Microsoft.AspNetCore.Mvc;
 
-## Entire Page
+[ApiController]
+[Route("api/[controller]")]
+[Authorize] // Enforces Windows Authentication automaticallypublic class AuthCheckController : ControllerBase
+{
+    [HttpGet("test")]
+    public IActionResult CheckCredentials()
+    {
+        // Extracts the authenticated identity (Domain\Username)
+        var identityName = User.Identity?.Name; 
+        var isAuth = User.Identity?.IsAuthenticated ?? false;
 
-```razor id="yjskot"
-@attribute [Authorize(Roles = "Role4")]
-```
-
----
-
-## Partial UI
-
-```razor id="8z1tjt"
-<AuthorizeView Roles="Role4">
-
-    <Authorized>
-
-        <AdminPanel />
-
-    </Authorized>
-
-</AuthorizeView>
-```
-
----
-
-## Manual Checks
-
-```csharp id="j6jlwm"
-if (user.IsInRole("Role4"))
-    // allowed
+        return Ok(new
+        {
+            Status = "Access Granted",
+            WindowsUser = identityName,
+            IsAuthenticated = isAuth
+        });
+    }
 }
-```
 
----
+## Why this works for both of your client setups:
 
-# This Is the Ideal Separation
+* Client 1 (UseDefaultCredentials = true): The client automatically sends the logged-in Windows user's Kerberos or NTLM token. The API verifies it against the current domain.
+* Client 2 (NetworkCredential): The client sends a challenge response using the explicit username, password, and domain you provided. Because your API has AddNegotiate() active and Anonymous turned off, it validates those domain credentials directly against Active Directory.
 
-| Layer                 | Responsibility          |
-| --------------------- | ----------------------- |
-| Windows Auth          | User authentication     |
-| IClaimsTransformation | AD group → role mapping |
-| Config                | Authorization rules     |
-| Blazor                | UI enforcement          |
+------------------------------
+If you are interested, let me know:
 
-That keeps the system clean, testable, and maintainable.
-===================================
+* Is your API server hosted on Windows (IIS) or a Linux/Docker environment? (Linux setups require extra active directory/keytab configuration).
+* Do you need to restrict access to a specific Active Directory Group? (e.g. [Authorize(Roles = @"DOMAIN\YourGroup")])
 
-using Microsoft.AspNetCore.Authentication.Negotiate;
 
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authorization;
-using System.Security.Claims;
-dotnet add package Microsoft.Extensions.Caching.Memory
