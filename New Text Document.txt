@@ -773,3 +773,252 @@ If you want, I can also regenerate:
 - GitHub Actions CI pipeline
 
 Just tell me what you want next, xxxxxxxxxxxx.
+=====================================================================
+
+You can absolutely do this cleanly, xxxxxxxxxxxx — if **your AD class already handles caching**, then the correct architecture is:
+
+> **Remove caching from the middleware entirely.  
+> Inject your AD class into the middleware.  
+> The middleware calls your AD class to get the user’s role.  
+> The attribute stays declarative and untouched.**
+
+This is the cleanest, most maintainable design in .NET 10.
+
+Below is the fully regenerated, production‑grade pattern.
+
+---
+
+# ✅ The Correct Architecture (when AD class handles caching)
+
+### ✔ Your AD class does:
+- AD lookup  
+- Group resolution  
+- Role resolution  
+- Caching  
+- Domain validation (optional)
+
+### ✔ Middleware does:
+- Extract identity  
+- Call your AD class  
+- Compare returned `UserRole` to `[RequireRole]`  
+- Block or allow  
+
+### ✔ Attribute does:
+- Declare required role  
+- No logic  
+- No dependencies  
+
+This is exactly how ASP.NET Core’s authorization metadata is intended to work.
+
+---
+
+# 🧩 1. Your AD class (with caching)
+
+Here is the regenerated version that handles **everything**:
+
+```csharp
+public interface IActiveDirectoryService
+{
+    Task<UserRole> GetUserRoleAsync(string domain, string username);
+}
+```
+
+Implementation:
+
+```csharp
+public class ActiveDirectoryService : IActiveDirectoryService
+{
+    private readonly MemoryCache _cache = new(new MemoryCacheOptions());
+    private readonly SecurityConfig _config;
+
+    public ActiveDirectoryService(IOptions<SecurityConfig> config)
+    {
+        _config = config.Value;
+    }
+
+    public async Task<UserRole> GetUserRoleAsync(string domain, string username)
+    {
+        var cacheKey = $"{domain}\\{username}";
+
+        if (_cache.TryGetValue(cacheKey, out UserRole cachedRole))
+            return cachedRole;
+
+        // 🔥 Your AD interrogation logic here
+        var groups = await QueryActiveDirectoryAsync(domain, username);
+
+        var role = ResolveRole(groups);
+
+        _cache.Set(cacheKey, role, TimeSpan.FromMinutes(_config.Cache.UserRoleCacheMinutes));
+
+        return role;
+    }
+
+    private Task<IEnumerable<string>> QueryActiveDirectoryAsync(string domain, string username)
+    {
+        // Your custom AD logic
+        return Task.FromResult<IEnumerable<string>>(new[] { "AD-Editors" });
+    }
+
+    private UserRole ResolveRole(IEnumerable<string> groups)
+    {
+        foreach (var kvp in _config.RoleMappings.RoleMappings)
+        {
+            if (groups.Any(g => kvp.Value.Contains(g, StringComparer.OrdinalIgnoreCase)))
+                return Enum.Parse<UserRole>(kvp.Key);
+        }
+
+        return UserRole.None;
+    }
+}
+```
+
+Your AD class now handles:
+
+- AD lookup  
+- Role mapping  
+- Caching  
+- Domain validation (optional)  
+
+---
+
+# 🧩 2. Middleware calls your AD class
+
+Middleware becomes **very small**:
+
+```csharp
+public class SecurityMiddleware
+{
+    private readonly RequestDelegate _next;
+
+    public SecurityMiddleware(RequestDelegate next)
+    {
+        _next = next;
+    }
+
+    public async Task Invoke(
+        HttpContext context,
+        IActiveDirectoryService adService,
+        IOptions<SecurityConfig> security)
+    {
+        var sec = security.Value;
+
+        // Extract identity
+        var identity = context.User.Identity?.Name;
+
+        if (identity is null)
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return;
+        }
+
+        var (domain, username) = SecurityHelpers.ParseWindowsIdentity(identity);
+
+        // Domain enforcement
+        if (!domain.Equals(sec.AllowedDomain, StringComparison.OrdinalIgnoreCase))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return;
+        }
+
+        // 🔥 Get role from your AD class (cached)
+        var userRole = await adService.GetUserRoleAsync(domain, username);
+
+        // Check endpoint requirement
+        var endpoint = context.GetEndpoint();
+        var attr = endpoint?.Metadata.GetMetadata<RequireRoleAttribute>();
+
+        if (attr != null)
+        {
+            if ((int)userRole < (int)attr.MinimumRole)
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
+        }
+
+        await _next(context);
+    }
+}
+```
+
+Middleware now delegates everything to your AD class.
+
+---
+
+# 🧩 3. Attribute stays simple
+
+```csharp
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
+public class RequireRoleAttribute : Attribute
+{
+    public UserRole MinimumRole { get; }
+
+    public RequireRoleAttribute(UserRole role)
+    {
+        MinimumRole = role;
+    }
+}
+```
+
+No dependencies.  
+No logic.  
+No AD calls.  
+No caching.  
+
+Perfect.
+
+---
+
+# 🧩 4. Program.cs (.NET 10)
+
+```csharp
+builder.Services.AddScoped<IActiveDirectoryService, ActiveDirectoryService>();
+builder.Services.AddSecurity(builder.Configuration);
+
+var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseSecurity();
+
+app.MapControllers();
+app.Run();
+```
+
+---
+
+# 🧩 5. Controller usage stays clean
+
+```csharp
+[ApiController]
+[Route("api/[controller]")]
+public class AccessController : ControllerBase
+{
+    [HttpGet("editor")]
+    [RequireRole(UserRole.Editor)]
+    public IActionResult Editor() => Ok("Editor OK");
+}
+```
+
+---
+
+# 🎉 Summary — How your AD class hooks into the attribute
+
+### ✔ Attribute declares required role  
+### ✔ Middleware reads attribute  
+### ✔ Middleware calls your AD class  
+### ✔ AD class returns cached role  
+### ✔ Middleware compares role to attribute  
+### ✔ Access allowed or denied  
+
+This is the correct, clean, extensible .NET 10 design.
+
+---
+
+If you want, I can regenerate:
+
+- integration tests for your AD class
+- mock AD service for unit tests
+- full DI extension for your AD service
+
+Just tell me what you want next, xxxxxxxxxxxx.
