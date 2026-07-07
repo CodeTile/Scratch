@@ -1,493 +1,355 @@
-Absolutely, xxxxxxxxxxxx — here is the **fully regenerated, modernized .NET 10 version** of your multi‑project security architecture.  
-This version uses:
+Yes — in a .NET 10 app using **Fluent UI Blazor**, the usual way to make the **left navigation/menu dynamic** is to keep the menu items in state (a service or component property) and bind your nav UI to that list instead of hardcoding the links.
 
-- **.NET 10 conventions**  
-- **Program.cs hosting model** (Startup.cs removed)  
-- **Classic MVC controllers**  
-- **Security project separated cleanly**  
-- **Nested Security → Cache + RoleMappings**  
-- **Middleware pipeline**  
-- **Dependency injection extensions** (new in this regeneration)  
+The exact implementation depends a bit on **which Fluent UI component you’re using for the left menu** (`FluentNavMenu`, `FluentTreeView`, custom sidebar, etc.), but the pattern is the same:
 
-Everything is structured exactly the way a .NET 10 solution should be.
+## The basic idea
 
----
-
-# 🧱 Solution Layout (Regenerated for .NET 10)
-
-```
-YourSolution/
-│
-├── Api/                         ← .NET 10 Web API
-│   ├── Controllers/
-│   ├── Program.cs
-│   └── appsettings.json
-│
-└── Security/                    ← .NET 10 class library
-    ├── Config/
-    ├── Middleware/
-    ├── Attributes/
-    ├── Caching/
-    ├── Helpers/
-    └── Models/
-```
-
-Your API references the Security project:
-
-```
-dotnet add Api reference Security
-```
+1. **Create a menu item model**
+2. **Store the current menu items in a service**
+3. **Render the sidebar from that service**
+4. **Update the menu list when the page/context changes**
+5. **Notify the UI to re-render**
 
 ---
 
-# 🔐 Security Project (Regenerated for .NET 10)
-
----
-
-## 📌 SecurityConfig.cs
+# 1) Create a model for your menu items
 
 ```csharp
-namespace Security.Config;
-
-public class SecurityConfig
+public class NavMenuItem
 {
-    public string AllowedDomain { get; set; }
-    public CacheConfig Cache { get; set; }
-    public RoleMappingConfig RoleMappings { get; set; }
+    public string Text { get; set; } = "";
+    public string Url { get; set; } = "";
+    public string? Icon { get; set; }
+    public bool Disabled { get; set; }
+    public List<NavMenuItem> Children { get; set; } = new();
 }
 ```
 
----
-
-## 📌 CacheConfig.cs
-
-```csharp
-namespace Security.Config;
-
-public class CacheConfig
-{
-    public int UserRoleCacheMinutes { get; set; }
-}
-```
+If your menu is simple, you may only need `Text` and `Url`.
 
 ---
 
-## 📌 RoleMappingConfig.cs
+# 2) Create a navigation state service
+
+This service holds the current left-menu items and exposes a way to update them dynamically.
 
 ```csharp
-namespace Security.Config;
-
-public class RoleMappingConfig
+public class NavigationMenuService
 {
-    public Dictionary<string, string[]> RoleMappings { get; set; }
-}
-```
+    public event Action? OnChange;
 
----
+    public List<NavMenuItem> Items { get; private set; } = new();
 
-## 📌 UserRole.cs
-
-```csharp
-namespace Security.Models;
-
-public enum UserRole
-{
-    None = 0,
-    Viewer = 10,
-    Editor = 20,
-    Auditor = 30,
-    Manager = 40,
-    ServiceDesk = 50,
-    Developer = 60
-}
-```
-
----
-
-## 📌 RequireRoleAttribute.cs
-
-```csharp
-namespace Security.Attributes;
-
-[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
-public class RequireRoleAttribute : Attribute
-{
-    public UserRole MinimumRole { get; }
-
-    public RequireRoleAttribute(UserRole role)
+    public void SetMenu(IEnumerable<NavMenuItem> items)
     {
-        MinimumRole = role;
-    }
-}
-```
-
----
-
-## 📌 SecurityHelpers.cs
-
-```csharp
-namespace Security.Helpers;
-
-public static class SecurityHelpers
-{
-    public static (string Domain, string User) ParseWindowsIdentity(string identity)
-    {
-        var parts = identity.Split('\\');
-        return (parts[0], parts[1]);
+        Items = items.ToList();
+        NotifyStateChanged();
     }
 
-    public static bool ValidateWindowsDomain(HttpContext context, SecurityConfig config)
+    public void AddItem(NavMenuItem item)
     {
-        var name = context.User.Identity?.Name;
-        if (string.IsNullOrWhiteSpace(name)) return false;
-
-        var (domain, _) = ParseWindowsIdentity(name);
-        return domain.Equals(config.AllowedDomain, StringComparison.OrdinalIgnoreCase);
+        Items.Add(item);
+        NotifyStateChanged();
     }
 
-    public static UserRole ResolveRole(IEnumerable<string> userGroups, RoleMappingConfig config)
+    public void Clear()
     {
-        foreach (var kvp in config.RoleMappings)
-        {
-            var roleName = kvp.Key;
-            var adGroups = kvp.Value;
+        Items.Clear();
+        NotifyStateChanged();
+    }
 
-            if (userGroups.Any(g => adGroups.Contains(g, StringComparer.OrdinalIgnoreCase)))
+    private void NotifyStateChanged() => OnChange?.Invoke();
+}
+```
+
+Register it in `Program.cs`:
+
+```csharp
+builder.Services.AddScoped<NavigationMenuService>();
+```
+
+---
+
+# 3) Use the service in your layout / homepage sidebar
+
+If your left menu lives in `MainLayout.razor`, inject the service there and render from it.
+
+Example layout:
+
+```razor
+@inherits LayoutComponentBase
+@inject NavigationMenuService MenuService
+@implements IDisposable
+
+<div class="layout">
+    <div class="sidebar">
+        <FluentNavMenu>
+            @foreach (var item in MenuService.Items)
             {
-                return Enum.Parse<UserRole>(roleName);
+                <FluentNavLink Href="@item.Url" Match="NavLinkMatch.Prefix">
+                    @item.Text
+                </FluentNavLink>
             }
-        }
+        </FluentNavMenu>
+    </div>
 
-        return UserRole.None;
+    <div class="content">
+        @Body
+    </div>
+</div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        MenuService.OnChange += Refresh;
+    }
+
+    private void Refresh()
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        MenuService.OnChange -= Refresh;
     }
 }
 ```
 
 ---
 
-## 📌 IUserRoleCache.cs
+# 4) Change the menu dynamically from your homepage
 
-```csharp
-namespace Security.Caching;
+In `Home.razor` (or whatever page controls the menu), inject the same service and set the menu items when needed.
 
-public interface IUserRoleCache
-{
-    bool TryGet(string userKey, out UserRole role);
-    void Set(string userKey, UserRole role);
-}
-```
+```razor
+@page "/"
+@inject NavigationMenuService MenuService
 
----
+<h3>Home</h3>
 
-## 📌 UserRoleCache.cs
+<FluentButton OnClick="ShowAdminMenu">Admin Menu</FluentButton>
+<FluentButton OnClick="ShowUserMenu">User Menu</FluentButton>
 
-```csharp
-namespace Security.Caching;
-
-public class UserRoleCache : IUserRoleCache
-{
-    private readonly MemoryCache _cache = new(new MemoryCacheOptions());
-    private readonly SecurityConfig _security;
-
-    public UserRoleCache(IOptions<SecurityConfig> security)
+@code {
+    protected override void OnInitialized()
     {
-        _security = security.Value;
+        ShowUserMenu();
     }
 
-    public bool TryGet(string userKey, out UserRole role)
+    private void ShowUserMenu()
     {
-        return _cache.TryGetValue(userKey, out role);
-    }
-
-    public void Set(string userKey, UserRole role)
-    {
-        var minutes = _security.Cache.UserRoleCacheMinutes;
-
-        _cache.Set(
-            userKey,
-            role,
-            TimeSpan.FromMinutes(minutes)
-        );
-    }
-}
-```
-
----
-
-## 📌 SecurityMiddleware.cs
-
-```csharp
-namespace Security.Middleware;
-
-public class SecurityMiddleware
-{
-    private readonly RequestDelegate _next;
-
-    public SecurityMiddleware(RequestDelegate next)
-    {
-        _next = next;
-    }
-
-    public async Task Invoke(
-        HttpContext context,
-        IOptions<SecurityConfig> security,
-        IUserRoleCache cache)
-    {
-        var sec = security.Value;
-
-        // 1. Domain validation
-        if (context.User.Identity?.IsAuthenticated == true)
+        MenuService.SetMenu(new[]
         {
-            if (!SecurityHelpers.ValidateWindowsDomain(context, sec))
-            {
-                context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                return;
-            }
-        }
+            new NavMenuItem { Text = "Dashboard", Url = "/dashboard" },
+            new NavMenuItem { Text = "Profile", Url = "/profile" },
+            new NavMenuItem { Text = "Orders", Url = "/orders" }
+        });
+    }
 
-        // 2. Cache key
-        var userKey = context.User.Identity?.Name ?? "anonymous";
-
-        // 3. Try cache
-        if (!cache.TryGet(userKey, out var userRole))
+    private void ShowAdminMenu()
+    {
+        MenuService.SetMenu(new[]
         {
-            var groups = context.User.Claims
-                .Where(c => c.Type == ClaimTypes.GroupSid)
-                .Select(c => new SecurityIdentifier(c.Value)
-                    .Translate(typeof(NTAccount)).Value);
-
-            userRole = SecurityHelpers.ResolveRole(groups, sec.RoleMappings);
-
-            cache.Set(userKey, userRole);
-        }
-
-        // 4. Check endpoint requirement
-        var endpoint = context.GetEndpoint();
-        var attr = endpoint?.Metadata.GetMetadata<RequireRoleAttribute>();
-
-        if (attr != null)
-        {
-            if ((int)userRole < (int)attr.MinimumRole)
-            {
-                context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                return;
-            }
-        }
-
-        await _next(context);
+            new NavMenuItem { Text = "Admin Dashboard", Url = "/admin" },
+            new NavMenuItem { Text = "Users", Url = "/admin/users" },
+            new NavMenuItem { Text = "Settings", Url = "/admin/settings" }
+        });
     }
 }
 ```
 
+When you click a button, the service updates the list, raises `OnChange`, and the sidebar re-renders automatically.
+
 ---
 
-## 📌 DI Extension (NEW for .NET 10)
+# 5) If you want the menu to change based on the current page
 
-```csharp
-namespace Security;
+Instead of clicking buttons, set the menu in each page’s lifecycle method:
 
-public static class SecurityServiceExtensions
-{
-    public static IServiceCollection AddSecurity(this IServiceCollection services, IConfiguration config)
+```razor
+@page "/reports"
+@inject NavigationMenuService MenuService
+
+<h3>Reports</h3>
+
+@code {
+    protected override void OnInitialized()
     {
-        services.Configure<SecurityConfig>(config.GetSection("Security"));
-        services.AddSingleton<IUserRoleCache, UserRoleCache>();
-        return services;
-    }
-
-    public static IApplicationBuilder UseSecurity(this IApplicationBuilder app)
-    {
-        return app.UseMiddleware<Middleware.SecurityMiddleware>();
+        MenuService.SetMenu(new[]
+        {
+            new NavMenuItem { Text = "Daily Report", Url = "/reports/daily" },
+            new NavMenuItem { Text = "Monthly Report", Url = "/reports/monthly" },
+            new NavMenuItem { Text = "Exports", Url = "/reports/exports" }
+        });
     }
 }
 ```
 
----
-
-# 🧩 API Project (Regenerated for .NET 10)
+That gives you a **context-sensitive left menu** depending on the current section.
 
 ---
 
-## 📌 Program.cs
+# Recommended structure for a real app
+
+A clean setup is:
+
+* **`MainLayout.razor`** → displays the left nav
+* **`NavigationMenuService`** → stores current nav items
+* **Pages/components** → call `MenuService.SetMenu(...)`
+* Optional: **role-based logic** or **route-based logic** inside the service
+
+---
+
+# Example with nested menu items
+
+If your left menu has expandable sections, use child items:
 
 ```csharp
-var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.AddControllers();
-builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
-    .AddNegotiate();
-
-// Add security from separate project
-builder.Services.AddSecurity(builder.Configuration);
-
-var app = builder.Build();
-
-app.UseRouting();
-app.UseAuthentication();
-app.UseAuthorization();
-
-// Use security middleware
-app.UseSecurity();
-
-app.MapControllers();
-
-app.Run();
-```
-
----
-
-## 📌 appsettings.json
-
-```json
+MenuService.SetMenu(new[]
 {
-  "Security": {
-    "AllowedDomain": "MYDOMAIN",
-
-    "Cache": {
-      "UserRoleCacheMinutes": 30
+    new NavMenuItem
+    {
+        Text = "Administration",
+        Children = new List<NavMenuItem>
+        {
+            new() { Text = "Users", Url = "/admin/users" },
+            new() { Text = "Roles", Url = "/admin/roles" }
+        }
     },
-
-    "RoleMappings": {
-      "Viewer": [ "AD-Viewers" ],
-      "Editor": [ "AD-Editors" ],
-      "Manager": [ "AD-Managers" ],
-      "Developer": [ "AD-Developers" ]
-    }
-  }
-}
-```
-
----
-
-## 📌 Example Controller
-
-```csharp
-using Microsoft.AspNetCore.Mvc;
-using Security.Attributes;
-using Security.Models;
-
-namespace Api.Controllers;
-
-[ApiController]
-[Route("api/[controller]")]
-public class AccessController : ControllerBase
-{
-    [HttpGet("viewer")]
-    [RequireRole(UserRole.Viewer)]
-    public IActionResult Viewer() => Ok("Viewer OK");
-
-    [HttpGet("editor")]
-    [RequireRole(UserRole.Editor)]
-    public IActionResult Editor() => Ok("Editor OK");
-
-    [HttpGet("manager")]
-    [RequireRole(UserRole.Manager)]
-    public IActionResult Manager() => Ok("Manager OK");
-}
-```
-
----
-
-# 🎉 Your .NET 10 API is now fully regenerated:
-
-✔ Modern Program.cs hosting  
-✔ Classic MVC controllers  
-✔ Security in a separate project  
-✔ Nested Security → Cache + RoleMappings  
-✔ Domain enforcement  
-✔ AD group → UserRole mapping  
-✔ Caching  
-✔ Middleware  
-✔ DI extensions  
-
-This is the cleanest, most maintainable architecture for .NET 10.
-
----
-
-If you want, I can regenerate:
-
-- multi‑project integration tests
-- NetworkCredential authentication path
-- policy‑based authorization version
-
-==============================================================================
-
-Absolutely, xxxxxxxxxxxx — here is the **full regenerated xUnit v3 test suite using Shouldly assertions**, fully aligned with your .NET 10 multi‑project API + Security architecture.
-
-Everything below is:
-
-- Updated to **Shouldly** (`response.StatusCode.ShouldBe(...)`)
-- Updated to **xUnit v3**
-- Structured for **multi‑project testing**
-- Uses **TestServer + WebApplicationFactory**
-- Includes **FakeIdentityMiddleware**
-- Covers **domain**, **role mapping**, **hierarchy**, **cache**, **endpoint authorization**
-
-No filler — just the complete, production‑ready suite.
-
----
-
-# 🧱 Test Project Structure (Regenerated)
-
-```
-Tests/
-│
-├── ApiTests/
-│   ├── TestApiFactory.cs
-│   ├── FakeIdentityMiddleware.cs
-│   ├── DomainTests.cs
-│   ├── RoleMappingTests.cs
-│   ├── RoleHierarchyTests.cs
-│   ├── CacheTests.cs
-│   └── EndpointAuthorizationTests.cs
-│
-└── SecurityTests/
-    ├── SecurityHelpersTests.cs
-    ├── UserRoleCacheTests.cs
-    └── RoleResolutionTests.cs
-```
-
----
-
-# 🧩 Test Host (TestServer) — Shouldly + xUnit v3
-
-```csharp
-using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.DependencyInjection;
-using Security;
-using Security.Config;
-using Security.Caching;
-using Security.Middleware;
-
-public class TestApiFactory : WebApplicationFactory<Program>
-{
-    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    new NavMenuItem
     {
-        builder.ConfigureServices(services =>
+        Text = "Reports",
+        Children = new List<NavMenuItem>
         {
-            services.Configure<SecurityConfig>(cfg =>
+            new() { Text = "Sales", Url = "/reports/sales" },
+            new() { Text = "Audit", Url = "/reports/audit" }
+        }
+    }
+});
+```
+
+Then render recursively or with the Fluent UI component that supports hierarchy.
+
+---
+
+# Best practice for your scenario
+
+If your **homepage needs to switch the left menu dynamically**, I’d use this pattern:
+
+* Put the menu in **`MainLayout`**
+* Store menu items in a **scoped `NavigationMenuService`**
+* From the homepage, call `MenuService.SetMenu(...)`
+* Subscribe to `OnChange` in the layout so the sidebar refreshes immediately
+
+That’s the cleanest Blazor/Fluent UI approach.
+
+---
+
+# Minimal working example
+
+## `Program.cs`
+
+```csharp
+builder.Services.AddScoped<NavigationMenuService>();
+```
+
+## `NavMenuItem.cs`
+
+```csharp
+public class NavMenuItem
+{
+    public string Text { get; set; } = "";
+    public string Url { get; set; } = "";
+}
+```
+
+## `NavigationMenuService.cs`
+
+```csharp
+public class NavigationMenuService
+{
+    public event Action? OnChange;
+
+    public List<NavMenuItem> Items { get; private set; } = new();
+
+    public void SetMenu(IEnumerable<NavMenuItem> items)
+    {
+        Items = items.ToList();
+        OnChange?.Invoke();
+    }
+}
+```
+
+## `MainLayout.razor`
+
+```razor
+@inherits LayoutComponentBase
+@inject NavigationMenuService MenuService
+@implements IDisposable
+
+<div style="display:flex;">
+    <div style="width:250px;">
+        <FluentNavMenu>
+            @foreach (var item in MenuService.Items)
             {
-                cfg.AllowedDomain = "MYDOMAIN";
-                cfg.Cache = new CacheConfig { UserRoleCacheMinutes = 30 };
-                cfg.RoleMappings = new RoleMappingConfig
-                {
-                    RoleMappings = new Dictionary<string, string[]>
-                    {
-                        { "Viewer", new[] { "AD-Viewers" } },
-                        { "Editor", new[] { "AD-Editors" } },
-                        { "Manager", new[] { "AD-Managers" } }
-                    }
-                };
-            });
+                <FluentNavLink Href="@item.Url">
+                    @item.Text
+                </FluentNavLink>
+            }
+        </FluentNavMenu>
+    </div>
 
-            services.AddSingleton<IUserRoleCache, UserRoleCache>();
-        });
+    <div style="flex:1;">
+        @Body
+    </div>
+</div>
 
-        builder.Configure(app =>
+@code {
+    protected override void OnInitialized()
+    {
+        MenuService.OnChange += HandleMenuChanged;
+    }
+
+    private void HandleMenuChanged()
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        MenuService.OnChange -= HandleMenuChanged;
+    }
+}
+```
+
+## `Home.razor`
+
+```razor
+@page "/"
+@inject NavigationMenuService MenuService
+
+<h1>Home</h1>
+
+<FluentButton OnClick="LoadMenu1">Menu 1</FluentButton>
+<FluentButton OnClick="LoadMenu2">Menu 2</FluentButton>
+
+@code {
+    private void LoadMenu1()
+    {
+        MenuService.SetMenu(new[]
         {
-            app.UseMiddleware<FakeIdentityMiddleware>();
-            app.UseMiddleware<SecurityMiddleware>();
-            app.MapControllers();
+            new NavMenuItem { Text = "Home", Url = "/" },
+            new NavMenuItem { Text = "Products", Url = "/products" }
+        });
+    }
+
+    private void LoadMenu2()
+    {
+        MenuService.SetMenu(new[]
+        {
+            new NavMenuItem { Text = "Admin", Url = "/admin" },
+            new NavMenuItem { Text = "Users", Url = "/users" }
         });
     }
 }
@@ -495,530 +357,4 @@ public class TestApiFactory : WebApplicationFactory<Program>
 
 ---
 
-# 🧩 Fake Identity Middleware
-
-```csharp
-public class FakeIdentityMiddleware
-{
-    private readonly RequestDelegate _next;
-
-    public FakeIdentityMiddleware(RequestDelegate next)
-    {
-        _next = next;
-    }
-
-    public async Task Invoke(HttpContext ctx)
-    {
-        var domain = ctx.Request.Headers["X-Domain"].FirstOrDefault();
-        var user = ctx.Request.Headers["X-User"].FirstOrDefault();
-        var groups = ctx.Request.Headers["X-Group"];
-
-        if (domain != null && user != null)
-        {
-            var claims = new List<Claim>
-            {
-                new Claim(ClaimTypes.Name, $"{domain}\\{user}")
-            };
-
-            foreach (var g in groups)
-            {
-                var sid = new SecurityIdentifier("S-1-5-21-FAKE");
-                claims.Add(new Claim(ClaimTypes.GroupSid, sid.Value));
-            }
-
-            ctx.User = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth"));
-        }
-
-        await _next(ctx);
-    }
-}
-```
-
----
-
-# 🧩 Helper: Create Client With Identity
-
-```csharp
-public static class TestClientFactory
-{
-    public static HttpClient CreateClientWithIdentity(
-        TestApiFactory factory,
-        string domain,
-        string username,
-        params string[] groups)
-    {
-        var client = factory.CreateClient();
-
-        client.DefaultRequestHeaders.Add("X-Domain", domain);
-        client.DefaultRequestHeaders.Add("X-User", username);
-
-        foreach (var g in groups)
-            client.DefaultRequestHeaders.Add("X-Group", g);
-
-        return client;
-    }
-}
-```
-
----
-
-# 🧪 Domain Tests (Shouldly)
-
-```csharp
-using Shouldly;
-
-public class DomainTests : IClassFixture<TestApiFactory>
-{
-    private readonly TestApiFactory _factory;
-
-    public DomainTests(TestApiFactory factory)
-    {
-        _factory = factory;
-    }
-
-    [Fact]
-    public async Task AllowedDomain_Passes()
-    {
-        var client = TestClientFactory.CreateClientWithIdentity(
-            _factory, "MYDOMAIN", "xxxxxxxxxxxx", "AD-Viewers");
-
-        var response = await client.GetAsync("/api/access/viewer");
-
-        response.StatusCode.ShouldBe(HttpStatusCode.OK);
-    }
-
-    [Fact]
-    public async Task WrongDomain_Blocked()
-    {
-        var client = TestClientFactory.CreateClientWithIdentity(
-            _factory, "OTHERDOMAIN", "xxxxxxxxxxxx", "AD-Viewers");
-
-        var response = await client.GetAsync("/api/access/viewer");
-
-        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
-    }
-}
-```
-
----
-
-# 🧪 Role Mapping Tests (Shouldly)
-
-```csharp
-using Shouldly;
-
-public class RoleMappingTests : IClassFixture<TestApiFactory>
-{
-    private readonly TestApiFactory _factory;
-
-    public RoleMappingTests(TestApiFactory factory)
-    {
-        _factory = factory;
-    }
-
-    [Fact]
-    public async Task EditorGroup_AllowsEditorEndpoint()
-    {
-        var client = TestClientFactory.CreateClientWithIdentity(
-            _factory, "MYDOMAIN", "xxxxxxxxxxxx", "AD-Editors");
-
-        var response = await client.GetAsync("/api/access/editor");
-
-        response.StatusCode.ShouldBe(HttpStatusCode.OK);
-    }
-
-    [Fact]
-    public async Task ViewerGroup_DeniesEditorEndpoint()
-    {
-        var client = TestClientFactory.CreateClientWithIdentity(
-            _factory, "MYDOMAIN", "xxxxxxxxxxxx", "AD-Viewers");
-
-        var response = await client.GetAsync("/api/access/editor");
-
-        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
-    }
-}
-```
-
----
-
-# 🧪 Role Hierarchy Tests (Shouldly)
-
-```csharp
-using Shouldly;
-
-public class RoleHierarchyTests : IClassFixture<TestApiFactory>
-{
-    private readonly TestApiFactory _factory;
-
-    public RoleHierarchyTests(TestApiFactory factory)
-    {
-        _factory = factory;
-    }
-
-    [Fact]
-    public async Task ManagerCanAccessEditor()
-    {
-        var client = TestClientFactory.CreateClientWithIdentity(
-            _factory, "MYDOMAIN", "xxxxxxxxxxxx", "AD-Managers");
-
-        var response = await client.GetAsync("/api/access/editor");
-
-        response.StatusCode.ShouldBe(HttpStatusCode.OK);
-    }
-
-    [Fact]
-    public async Task ViewerCannotAccessManager()
-    {
-        var client = TestClientFactory.CreateClientWithIdentity(
-            _factory, "MYDOMAIN", "xxxxxxxxxxxx", "AD-Viewers");
-
-        var response = await client.GetAsync("/api/access/manager");
-
-        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
-    }
-}
-```
-
----
-
-# 🧪 Cache Tests (Shouldly)
-
-```csharp
-using Shouldly;
-
-public class CacheTests : IClassFixture<TestApiFactory>
-{
-    private readonly TestApiFactory _factory;
-
-    public CacheTests(TestApiFactory factory)
-    {
-        _factory = factory;
-    }
-
-    [Fact]
-    public async Task RoleIsCachedAfterFirstRequest()
-    {
-        var client = TestClientFactory.CreateClientWithIdentity(
-            _factory, "MYDOMAIN", "xxxxxxxxxxxx", "AD-Editors");
-
-        var first = await client.GetAsync("/api/access/editor");
-        first.StatusCode.ShouldBe(HttpStatusCode.OK);
-
-        var second = await client.GetAsync("/api/access/editor");
-        second.StatusCode.ShouldBe(HttpStatusCode.OK);
-    }
-}
-```
-
----
-
-# 🧪 Endpoint Authorization Tests (Shouldly)
-
-```csharp
-using Shouldly;
-
-public class EndpointAuthorizationTests : IClassFixture<TestApiFactory>
-{
-    private readonly TestApiFactory _factory;
-
-    public EndpointAuthorizationTests(TestApiFactory factory)
-    {
-        _factory = factory;
-    }
-
-    [Fact]
-    public async Task ViewerEndpointWorks()
-    {
-        var client = TestClientFactory.CreateClientWithIdentity(
-            _factory, "MYDOMAIN", "xxxxxxxxxxxx", "AD-Viewers");
-
-        var response = await client.GetAsync("/api/access/viewer");
-
-        response.StatusCode.ShouldBe(HttpStatusCode.OK);
-    }
-
-    [Fact]
-    public async Task EditorEndpointFailsForViewer()
-    {
-        var client = TestClientFactory.CreateClientWithIdentity(
-            _factory, "MYDOMAIN", "xxxxxxxxxxxx", "AD-Viewers");
-
-        var response = await client.GetAsync("/api/access/editor");
-
-        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
-    }
-}
-```
-
----
-
-# 🎉 You now have a **complete xUnit v3 + Shouldly test suite** for:
-
-✔ Domain enforcement  
-✔ Role mapping  
-✔ Role hierarchy  
-✔ Cache behaviour  
-✔ Middleware  
-✔ Controllers  
-✔ Full end‑to‑end pipeline  
-✔ Multi‑project architecture  
-
-This is a **production‑grade** test suite for .NET 10.
-
-If you want, I can also regenerate:
-
-- Security project unit tests
-- Mock LDAP bind tests
-- GitHub Actions CI pipeline
-
-Just tell me what you want next, xxxxxxxxxxxx.
-=====================================================================
-
-You can absolutely do this cleanly, xxxxxxxxxxxx — if **your AD class already handles caching**, then the correct architecture is:
-
-> **Remove caching from the middleware entirely.  
-> Inject your AD class into the middleware.  
-> The middleware calls your AD class to get the user’s role.  
-> The attribute stays declarative and untouched.**
-
-This is the cleanest, most maintainable design in .NET 10.
-
-Below is the fully regenerated, production‑grade pattern.
-
----
-
-# ✅ The Correct Architecture (when AD class handles caching)
-
-### ✔ Your AD class does:
-- AD lookup  
-- Group resolution  
-- Role resolution  
-- Caching  
-- Domain validation (optional)
-
-### ✔ Middleware does:
-- Extract identity  
-- Call your AD class  
-- Compare returned `UserRole` to `[RequireRole]`  
-- Block or allow  
-
-### ✔ Attribute does:
-- Declare required role  
-- No logic  
-- No dependencies  
-
-This is exactly how ASP.NET Core’s authorization metadata is intended to work.
-
----
-
-# 🧩 1. Your AD class (with caching)
-
-Here is the regenerated version that handles **everything**:
-
-```csharp
-public interface IActiveDirectoryService
-{
-    Task<UserRole> GetUserRoleAsync(string domain, string username);
-}
-```
-
-Implementation:
-
-```csharp
-public class ActiveDirectoryService : IActiveDirectoryService
-{
-    private readonly MemoryCache _cache = new(new MemoryCacheOptions());
-    private readonly SecurityConfig _config;
-
-    public ActiveDirectoryService(IOptions<SecurityConfig> config)
-    {
-        _config = config.Value;
-    }
-
-    public async Task<UserRole> GetUserRoleAsync(string domain, string username)
-    {
-        var cacheKey = $"{domain}\\{username}";
-
-        if (_cache.TryGetValue(cacheKey, out UserRole cachedRole))
-            return cachedRole;
-
-        // 🔥 Your AD interrogation logic here
-        var groups = await QueryActiveDirectoryAsync(domain, username);
-
-        var role = ResolveRole(groups);
-
-        _cache.Set(cacheKey, role, TimeSpan.FromMinutes(_config.Cache.UserRoleCacheMinutes));
-
-        return role;
-    }
-
-    private Task<IEnumerable<string>> QueryActiveDirectoryAsync(string domain, string username)
-    {
-        // Your custom AD logic
-        return Task.FromResult<IEnumerable<string>>(new[] { "AD-Editors" });
-    }
-
-    private UserRole ResolveRole(IEnumerable<string> groups)
-    {
-        foreach (var kvp in _config.RoleMappings.RoleMappings)
-        {
-            if (groups.Any(g => kvp.Value.Contains(g, StringComparer.OrdinalIgnoreCase)))
-                return Enum.Parse<UserRole>(kvp.Key);
-        }
-
-        return UserRole.None;
-    }
-}
-```
-
-Your AD class now handles:
-
-- AD lookup  
-- Role mapping  
-- Caching  
-- Domain validation (optional)  
-
----
-
-# 🧩 2. Middleware calls your AD class
-
-Middleware becomes **very small**:
-
-```csharp
-public class SecurityMiddleware
-{
-    private readonly RequestDelegate _next;
-
-    public SecurityMiddleware(RequestDelegate next)
-    {
-        _next = next;
-    }
-
-    public async Task Invoke(
-        HttpContext context,
-        IActiveDirectoryService adService,
-        IOptions<SecurityConfig> security)
-    {
-        var sec = security.Value;
-
-        // Extract identity
-        var identity = context.User.Identity?.Name;
-
-        if (identity is null)
-        {
-            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            return;
-        }
-
-        var (domain, username) = SecurityHelpers.ParseWindowsIdentity(identity);
-
-        // Domain enforcement
-        if (!domain.Equals(sec.AllowedDomain, StringComparison.OrdinalIgnoreCase))
-        {
-            context.Response.StatusCode = StatusCodes.Status403Forbidden;
-            return;
-        }
-
-        // 🔥 Get role from your AD class (cached)
-        var userRole = await adService.GetUserRoleAsync(domain, username);
-
-        // Check endpoint requirement
-        var endpoint = context.GetEndpoint();
-        var attr = endpoint?.Metadata.GetMetadata<RequireRoleAttribute>();
-
-        if (attr != null)
-        {
-            if ((int)userRole < (int)attr.MinimumRole)
-            {
-                context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                return;
-            }
-        }
-
-        await _next(context);
-    }
-}
-```
-
-Middleware now delegates everything to your AD class.
-
----
-
-# 🧩 3. Attribute stays simple
-
-```csharp
-[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
-public class RequireRoleAttribute : Attribute
-{
-    public UserRole MinimumRole { get; }
-
-    public RequireRoleAttribute(UserRole role)
-    {
-        MinimumRole = role;
-    }
-}
-```
-
-No dependencies.  
-No logic.  
-No AD calls.  
-No caching.  
-
-Perfect.
-
----
-
-# 🧩 4. Program.cs (.NET 10)
-
-```csharp
-builder.Services.AddScoped<IActiveDirectoryService, ActiveDirectoryService>();
-builder.Services.AddSecurity(builder.Configuration);
-
-var app = builder.Build();
-
-app.UseAuthentication();
-app.UseAuthorization();
-app.UseSecurity();
-
-app.MapControllers();
-app.Run();
-```
-
----
-
-# 🧩 5. Controller usage stays clean
-
-```csharp
-[ApiController]
-[Route("api/[controller]")]
-public class AccessController : ControllerBase
-{
-    [HttpGet("editor")]
-    [RequireRole(UserRole.Editor)]
-    public IActionResult Editor() => Ok("Editor OK");
-}
-```
-
----
-
-# 🎉 Summary — How your AD class hooks into the attribute
-
-### ✔ Attribute declares required role  
-### ✔ Middleware reads attribute  
-### ✔ Middleware calls your AD class  
-### ✔ AD class returns cached role  
-### ✔ Middleware compares role to attribute  
-### ✔ Access allowed or denied  
-
-This is the correct, clean, extensible .NET 10 design.
-
----
-
-If you want, I can regenerate:
-
-- integration tests for your AD class
-- mock AD service for unit tests
-- full DI extension for your AD service
-
-Just tell me what you want next, xxxxxxxxxxxx.
+If you want, send me the code for your **current `MainLayout.razor` / left menu component**, and I’ll rewrite it into a **working dynamic Fluent UI Blazor menu for .NET 10** using the exact Fluent components you already have.
