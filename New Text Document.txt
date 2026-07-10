@@ -1,360 +1,211 @@
-Yes — in a .NET 10 app using **Fluent UI Blazor**, the usual way to make the **left navigation/menu dynamic** is to keep the menu items in state (a service or component property) and bind your nav UI to that list instead of hardcoding the links.
+Yes — **but only if you deliberately capture both identities yourself**, because in a Blazor app running with **Windows authentication**, the app normally only sees **the identity that authenticated the HTTP request**.
 
-The exact implementation depends a bit on **which Fluent UI component you’re using for the left menu** (`FluentNavMenu`, `FluentTreeView`, custom sidebar, etc.), but the pattern is the same:
+So if you launch **Edge with “Run as different user”**, the app usually sees **that impersonated Windows user** as the authenticated user. It does **not automatically also know who originally launched Visual Studio or who is logged into Windows interactively**.
 
-## The basic idea
+## The distinction
 
-1. **Create a menu item model**
-2. **Store the current menu items in a service**
-3. **Render the sidebar from that service**
-4. **Update the menu list when the page/context changes**
-5. **Notify the UI to re-render**
+There are potentially **two different users** involved during local testing:
 
----
+1. **The Windows user running Visual Studio / logged into the desktop**
+2. **The Windows user the browser is running as** via **Run as different user**
 
-# 1) Create a model for your menu items
+For your Blazor app:
 
-```csharp
-public class NavMenuItem
-{
-    public string Text { get; set; } = "";
-    public string Url { get; set; } = "";
-    public string? Icon { get; set; }
-    public bool Disabled { get; set; }
-    public List<NavMenuItem> Children { get; set; } = new();
-}
-```
+* `AuthenticationStateProvider` / `HttpContext.User` gives you **the browser-authenticated user**
+  → this is the one AD / Negotiate uses for the app request
 
-If your menu is simple, you may only need `Text` and `Url`.
+* it does **not** automatically give you the “original desktop user” as a second identity
 
 ---
 
-# 2) Create a navigation state service
+# What you can show on the WhoAmI page
 
-This service holds the current left-menu items and exposes a way to update them dynamically.
+## Option A — show the **authenticated request user only**
 
-```csharp
-public class NavigationMenuService
-{
-    public event Action? OnChange;
+This is the **important one for your app security**.
 
-    public List<NavMenuItem> Items { get; private set; } = new();
-
-    public void SetMenu(IEnumerable<NavMenuItem> items)
-    {
-        Items = items.ToList();
-        NotifyStateChanged();
-    }
-
-    public void AddItem(NavMenuItem item)
-    {
-        Items.Add(item);
-        NotifyStateChanged();
-    }
-
-    public void Clear()
-    {
-        Items.Clear();
-        NotifyStateChanged();
-    }
-
-    private void NotifyStateChanged() => OnChange?.Invoke();
-}
-```
-
-Register it in `Program.cs`:
+That’s what we already did:
 
 ```csharp
-builder.Services.AddScoped<NavigationMenuService>();
+authState.User.Identity?.Name
 ```
+
+If you run Edge as another AD account, this will show the impersonated browser user.
 
 ---
 
-# 3) Use the service in your layout / homepage sidebar
+## Option B — also show the **machine’s current Windows identity from the server process**
 
-If your left menu lives in `MainLayout.razor`, inject the service there and render from it.
+You *can* show another identity such as:
 
-Example layout:
+```csharp
+System.Security.Principal.WindowsIdentity.GetCurrent().Name
+```
+
+but be careful: in a Blazor Server app that value is **not “the original logged-in desktop user” in a reliable browser-testing sense**. It is the Windows identity of the **current server process / thread context** on the server side, which can be misleading depending on how the app is hosted.
+
+For local development it can still be useful as a diagnostic field, but I would label it clearly.
+
+---
+
+# Recommended WhoAmI page for your scenario
+
+This page shows:
+
+1. **Authenticated request user** → the identity your Blazor app is actually using
+2. **Server process identity** → useful for debugging during local impersonation tests
+3. A simple flag to indicate whether they differ
+
+## `Pages/WhoAmI.razor`
 
 ```razor
-@inherits LayoutComponentBase
-@inject NavigationMenuService MenuService
-@implements IDisposable
+@page "/whoami"
+@using System.Security.Claims
+@using System.Security.Principal
+@inject AuthenticationStateProvider AuthenticationStateProvider
 
-<div class="layout">
-    <div class="sidebar">
-        <FluentNavMenu>
-            @foreach (var item in MenuService.Items)
-            {
-                <FluentNavLink Href="@item.Url" Match="NavLinkMatch.Prefix">
-                    @item.Text
-                </FluentNavLink>
-            }
-        </FluentNavMenu>
+<PageTitle>Who Am I</PageTitle>
+
+<h1>Who Am I</h1>
+
+@if (_requestUser is null)
+{
+    <p>Loading...</p>
+}
+else
+{
+    <div class="mb-4">
+        <h3>Request / Authenticated User</h3>
+        <p><strong>Name:</strong> @_requestUser.Identity?.Name</p>
+        <p><strong>Authentication Type:</strong> @_requestUser.Identity?.AuthenticationType</p>
+        <p><strong>Authenticated:</strong> @_requestUser.Identity?.IsAuthenticated</p>
     </div>
 
-    <div class="content">
-        @Body
-    </div>
-</div>
-
-@code {
-    protected override void OnInitialized()
-    {
-        MenuService.OnChange += Refresh;
-    }
-
-    private void Refresh()
-    {
-        InvokeAsync(StateHasChanged);
-    }
-
-    public void Dispose()
-    {
-        MenuService.OnChange -= Refresh;
-    }
-}
-```
-
----
-
-# 4) Change the menu dynamically from your homepage
-
-In `Home.razor` (or whatever page controls the menu), inject the same service and set the menu items when needed.
-
-```razor
-@page "/"
-@inject NavigationMenuService MenuService
-
-<h3>Home</h3>
-
-<FluentButton OnClick="ShowAdminMenu">Admin Menu</FluentButton>
-<FluentButton OnClick="ShowUserMenu">User Menu</FluentButton>
-
-@code {
-    protected override void OnInitialized()
-    {
-        ShowUserMenu();
-    }
-
-    private void ShowUserMenu()
-    {
-        MenuService.SetMenu(new[]
-        {
-            new NavMenuItem { Text = "Dashboard", Url = "/dashboard" },
-            new NavMenuItem { Text = "Profile", Url = "/profile" },
-            new NavMenuItem { Text = "Orders", Url = "/orders" }
-        });
-    }
-
-    private void ShowAdminMenu()
-    {
-        MenuService.SetMenu(new[]
-        {
-            new NavMenuItem { Text = "Admin Dashboard", Url = "/admin" },
-            new NavMenuItem { Text = "Users", Url = "/admin/users" },
-            new NavMenuItem { Text = "Settings", Url = "/admin/settings" }
-        });
-    }
-}
-```
-
-When you click a button, the service updates the list, raises `OnChange`, and the sidebar re-renders automatically.
-
----
-
-# 5) If you want the menu to change based on the current page
-
-Instead of clicking buttons, set the menu in each page’s lifecycle method:
-
-```razor
-@page "/reports"
-@inject NavigationMenuService MenuService
-
-<h3>Reports</h3>
-
-@code {
-    protected override void OnInitialized()
-    {
-        MenuService.SetMenu(new[]
-        {
-            new NavMenuItem { Text = "Daily Report", Url = "/reports/daily" },
-            new NavMenuItem { Text = "Monthly Report", Url = "/reports/monthly" },
-            new NavMenuItem { Text = "Exports", Url = "/reports/exports" }
-        });
-    }
-}
-```
-
-That gives you a **context-sensitive left menu** depending on the current section.
-
----
-
-# Recommended structure for a real app
-
-A clean setup is:
-
-* **`MainLayout.razor`** → displays the left nav
-* **`NavigationMenuService`** → stores current nav items
-* **Pages/components** → call `MenuService.SetMenu(...)`
-* Optional: **role-based logic** or **route-based logic** inside the service
-
----
-
-# Example with nested menu items
-
-If your left menu has expandable sections, use child items:
-
-```csharp
-MenuService.SetMenu(new[]
-{
-    new NavMenuItem
-    {
-        Text = "Administration",
-        Children = new List<NavMenuItem>
-        {
-            new() { Text = "Users", Url = "/admin/users" },
-            new() { Text = "Roles", Url = "/admin/roles" }
-        }
-    },
-    new NavMenuItem
-    {
-        Text = "Reports",
-        Children = new List<NavMenuItem>
-        {
-            new() { Text = "Sales", Url = "/reports/sales" },
-            new() { Text = "Audit", Url = "/reports/audit" }
-        }
-    }
-});
-```
-
-Then render recursively or with the Fluent UI component that supports hierarchy.
-
----
-
-# Best practice for your scenario
-
-If your **homepage needs to switch the left menu dynamically**, I’d use this pattern:
-
-* Put the menu in **`MainLayout`**
-* Store menu items in a **scoped `NavigationMenuService`**
-* From the homepage, call `MenuService.SetMenu(...)`
-* Subscribe to `OnChange` in the layout so the sidebar refreshes immediately
-
-That’s the cleanest Blazor/Fluent UI approach.
-
----
-
-# Minimal working example
-
-## `Program.cs`
-
-```csharp
-builder.Services.AddScoped<NavigationMenuService>();
-```
-
-## `NavMenuItem.cs`
-
-```csharp
-public class NavMenuItem
-{
-    public string Text { get; set; } = "";
-    public string Url { get; set; } = "";
-}
-```
-
-## `NavigationMenuService.cs`
-
-```csharp
-public class NavigationMenuService
-{
-    public event Action? OnChange;
-
-    public List<NavMenuItem> Items { get; private set; } = new();
-
-    public void SetMenu(IEnumerable<NavMenuItem> items)
-    {
-        Items = items.ToList();
-        OnChange?.Invoke();
-    }
-}
-```
-
-## `MainLayout.razor`
-
-```razor
-@inherits LayoutComponentBase
-@inject NavigationMenuService MenuService
-@implements IDisposable
-
-<div style="display:flex;">
-    <div style="width:250px;">
-        <FluentNavMenu>
-            @foreach (var item in MenuService.Items)
-            {
-                <FluentNavLink Href="@item.Url">
-                    @item.Text
-                </FluentNavLink>
-            }
-        </FluentNavMenu>
+    <div class="mb-4">
+        <h3>Server Process Identity</h3>
+        <p><strong>Name:</strong> @_serverIdentityName</p>
     </div>
 
-    <div style="flex:1;">
-        @Body
+    <div class="mb-4">
+        <h3>Comparison</h3>
+        <p><strong>Different identities:</strong> @_differentUsers</p>
     </div>
-</div>
 
-@code {
-    protected override void OnInitialized()
+    <h3>Claims</h3>
+
+    @if (_claims.Count == 0)
     {
-        MenuService.OnChange += HandleMenuChanged;
+        <p>No claims found.</p>
     }
-
-    private void HandleMenuChanged()
+    else
     {
-        InvokeAsync(StateHasChanged);
-    }
-
-    public void Dispose()
-    {
-        MenuService.OnChange -= HandleMenuChanged;
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var claim in _claims)
+                {
+                    <tr>
+                        <td>@claim.Type</td>
+                        <td>@claim.Value</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
     }
 }
-```
-
-## `Home.razor`
-
-```razor
-@page "/"
-@inject NavigationMenuService MenuService
-
-<h1>Home</h1>
-
-<FluentButton OnClick="LoadMenu1">Menu 1</FluentButton>
-<FluentButton OnClick="LoadMenu2">Menu 2</FluentButton>
 
 @code {
-    private void LoadMenu1()
-    {
-        MenuService.SetMenu(new[]
-        {
-            new NavMenuItem { Text = "Home", Url = "/" },
-            new NavMenuItem { Text = "Products", Url = "/products" }
-        });
-    }
+    private ClaimsPrincipal? _requestUser;
+    private List<Claim> _claims = new();
 
-    private void LoadMenu2()
+    private string? _serverIdentityName;
+    private bool _differentUsers;
+
+    protected override async Task OnInitializedAsync()
     {
-        MenuService.SetMenu(new[]
-        {
-            new NavMenuItem { Text = "Admin", Url = "/admin" },
-            new NavMenuItem { Text = "Users", Url = "/users" }
-        });
+        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        _requestUser = authState.User;
+        _claims = _requestUser.Claims.OrderBy(c => c.Type).ToList();
+
+        _serverIdentityName = WindowsIdentity.GetCurrent()?.Name;
+
+        var requestUserName = _requestUser.Identity?.Name ?? string.Empty;
+        var serverUserName = _serverIdentityName ?? string.Empty;
+
+        _differentUsers = !string.Equals(
+            requestUserName,
+            serverUserName,
+            StringComparison.OrdinalIgnoreCase);
     }
 }
 ```
 
 ---
 
-If you want, send me the code for your **current `MainLayout.razor` / left menu component**, and I’ll rewrite it into a **working dynamic Fluent UI Blazor menu for .NET 10** using the exact Fluent components you already have.
+# How to interpret the results
+
+## `Request / Authenticated User`
+
+This is the one that matters for authorization.
+
+If you open Edge with **Run as different user**, this should usually be the impersonated AD account.
+
+Example:
+
+```text
+CORP\alice.smith
+```
+
+---
+
+## `Server Process Identity`
+
+This is just diagnostic. During local dev it might be:
+
+* your normal Windows account
+* IIS Express identity
+* app pool / process identity
+* or something else depending on host
+
+So I would **not** treat this as “the logged-in user” in a business sense. It’s just useful for debugging if you want to see whether the request identity differs from the server process identity.
+
+---
+
+# Important limitation
+
+If by “show login user and impersonated user” you mean:
+
+> “Show the person who is signed into Windows on the machine **and** the different AD user the browser is running as”
+
+then **Blazor doesn’t automatically know that first one** in a trustworthy way for the web request. The app only really knows the identity attached to the request.
+
+So the safest statement is:
+
+* **Yes, you can show the authenticated browser/request user**
+* **You can also show a server-side Windows identity for diagnostics**
+* **No, there isn’t a built-in reliable “original desktop user” field automatically available to the app request**
+
+---
+
+# My recommendation
+
+For your testing page, I’d label them as:
+
+* **Authenticated Request User**
+* **Server Process Identity**
+
+rather than “login user” and “impersonated user”, because that wording is more accurate and avoids confusion.
+
+If you want, I can give you a **slightly better WhoAmI page** next that specifically highlights:
+
+* **AD user name**
+* **domain**
+* **SID**
+* **authentication scheme**
+* **all group claims**
+* and a big banner saying **“Browser is running as a different user”** when the two identities differ.
