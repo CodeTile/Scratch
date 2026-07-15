@@ -1,211 +1,182 @@
-Yes — **but only if you deliberately capture both identities yourself**, because in a Blazor app running with **Windows authentication**, the app normally only sees **the identity that authenticated the HTTP request**.
+Yes. After seeing the actual API, this is the approach I'd use. There's no need for an intermediate `TreeNode` at all.
 
-So if you launch **Edge with “Run as different user”**, the app usually sees **that impersonated Windows user** as the authenticated user. It does **not automatically also know who originally launched Visual Studio or who is logged into Windows interactively**.
-
-## The distinction
-
-There are potentially **two different users** involved during local testing:
-
-1. **The Windows user running Visual Studio / logged into the desktop**
-2. **The Windows user the browser is running as** via **Run as different user**
-
-For your Blazor app:
-
-* `AuthenticationStateProvider` / `HttpContext.User` gives you **the browser-authenticated user**
-  → this is the one AD / Negotiate uses for the app request
-
-* it does **not** automatically give you the “original desktop user” as a second identity
-
----
-
-# What you can show on the WhoAmI page
-
-## Option A — show the **authenticated request user only**
-
-This is the **important one for your app security**.
-
-That’s what we already did:
+## Grid item
 
 ```csharp
-authState.User.Identity?.Name
+public enum GridItemType
+{
+    Object,
+    Item
+}
+
+public sealed class MyGridItem : HierarchicalGridItem<object, MyGridItem>
+{
+    public required GridItemType Type { get; init; }
+
+    public string Name =>
+        Item switch
+        {
+            MyObject o => o.Name,
+            FooBar f => f.Name,
+            _ => string.Empty
+        };
+
+    public MyObject? MyObject => Item as MyObject;
+
+    public FooBar? FooBar => Item as FooBar;
+}
 ```
 
-If you run Edge as another AD account, this will show the impersonated browser user.
-
----
-
-## Option B — also show the **machine’s current Windows identity from the server process**
-
-You *can* show another identity such as:
+Notice that `Item` comes from the base class:
 
 ```csharp
-System.Security.Principal.WindowsIdentity.GetCurrent().Name
+public required object Item { get; init; }
 ```
 
-but be careful: in a Blazor Server app that value is **not “the original logged-in desktop user” in a reliable browser-testing sense**. It is the Windows identity of the **current server process / thread context** on the server side, which can be misleading depending on how the app is hosted.
-
-For local development it can still be useful as a diagnostic field, but I would label it clearly.
+so it can hold either a `MyObject` or a `FooBar`.
 
 ---
 
-# Recommended WhoAmI page for your scenario
+## Build the hierarchy
 
-This page shows:
+```csharp
+private MyGridItem Build(MyObject obj, int depth = 0)
+{
+    var gridItem = new MyGridItem
+    {
+        Item = obj,
+        Type = GridItemType.Object,
+        Depth = depth,
+        IsCollapsed = true
+    };
 
-1. **Authenticated request user** → the identity your Blazor app is actually using
-2. **Server process identity** → useful for debugging during local impersonation tests
-3. A simple flag to indicate whether they differ
+    foreach (var child in obj.Children)
+    {
+        gridItem.Children.Add(Build(child, depth + 1));
+    }
 
-## `Pages/WhoAmI.razor`
+    foreach (var item in obj.Items)
+    {
+        gridItem.Children.Add(new MyGridItem
+        {
+            Item = item,
+            Type = GridItemType.Item,
+            Depth = depth + 1
+        });
+    }
+
+    return gridItem;
+}
+```
+
+Then:
+
+```csharp
+private List<MyGridItem> GridItems = [];
+
+protected override void OnInitialized()
+{
+    GridItems = RootObjects
+        .Select(Build)
+        .ToList();
+}
+```
+
+---
+
+## DataGrid
 
 ```razor
-@page "/whoami"
-@using System.Security.Claims
-@using System.Security.Principal
-@inject AuthenticationStateProvider AuthenticationStateProvider
+<FluentDataGrid Items="@GridItems">
 
-<PageTitle>Who Am I</PageTitle>
+    <HierarchyColumn />
 
-<h1>Who Am I</h1>
+    <PropertyColumn
+        Property="@(x => x.Name)"
+        Title="Name" />
 
-@if (_requestUser is null)
-{
-    <p>Loading...</p>
-}
-else
-{
-    <div class="mb-4">
-        <h3>Request / Authenticated User</h3>
-        <p><strong>Name:</strong> @_requestUser.Identity?.Name</p>
-        <p><strong>Authentication Type:</strong> @_requestUser.Identity?.AuthenticationType</p>
-        <p><strong>Authenticated:</strong> @_requestUser.Identity?.IsAuthenticated</p>
-    </div>
+    <TemplateColumn Title="Type">
+        @if (context.Type == GridItemType.Object)
+        {
+            <FluentIcon Value="@(new Icons.Regular.Size20.Folder())" />
+        }
+        else
+        {
+            <FluentIcon Value="@(new Icons.Regular.Size20.Document())" />
+        }
+    </TemplateColumn>
 
-    <div class="mb-4">
-        <h3>Server Process Identity</h3>
-        <p><strong>Name:</strong> @_serverIdentityName</p>
-    </div>
-
-    <div class="mb-4">
-        <h3>Comparison</h3>
-        <p><strong>Different identities:</strong> @_differentUsers</p>
-    </div>
-
-    <h3>Claims</h3>
-
-    @if (_claims.Count == 0)
-    {
-        <p>No claims found.</p>
-    }
-    else
-    {
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Type</th>
-                    <th>Value</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var claim in _claims)
-                {
-                    <tr>
-                        <td>@claim.Type</td>
-                        <td>@claim.Value</td>
-                    </tr>
-                }
-            </tbody>
-        </table>
-    }
-}
-
-@code {
-    private ClaimsPrincipal? _requestUser;
-    private List<Claim> _claims = new();
-
-    private string? _serverIdentityName;
-    private bool _differentUsers;
-
-    protected override async Task OnInitializedAsync()
-    {
-        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
-        _requestUser = authState.User;
-        _claims = _requestUser.Claims.OrderBy(c => c.Type).ToList();
-
-        _serverIdentityName = WindowsIdentity.GetCurrent()?.Name;
-
-        var requestUserName = _requestUser.Identity?.Name ?? string.Empty;
-        var serverUserName = _serverIdentityName ?? string.Empty;
-
-        _differentUsers = !string.Equals(
-            requestUserName,
-            serverUserName,
-            StringComparison.OrdinalIgnoreCase);
-    }
-}
+</FluentDataGrid>
 ```
 
 ---
 
-# How to interpret the results
+## Why I like this design
 
-## `Request / Authenticated User`
+You don't have three models (`MyObject`, `TreeNode`, `MyGridItem`). You have just:
 
-This is the one that matters for authorization.
+* `MyObject` (your domain model)
+* `FooBar` (your domain model)
+* `MyGridItem` (your UI model)
 
-If you open Edge with **Run as different user**, this should usually be the impersonated AD account.
+The grid item is responsible for:
 
-Example:
+* hierarchy (`Children`, `Depth`, `IsCollapsed`)
+* exposing display properties (`Name`, `Type`)
+* carrying the underlying object (`Item`)
 
-```text
-CORP\alice.smith
+---
+
+## An even cleaner version
+
+Since every row has a `Name`, you can avoid the `switch` expression by introducing a tiny interface:
+
+```csharp
+public interface ITreeItem
+{
+    string Name { get; }
+}
 ```
 
----
+Then:
 
-## `Server Process Identity`
+```csharp
+public class MyObject : ITreeItem
+{
+    public string Name { get; set; } = "";
+    public List<MyObject> Children { get; set; } = [];
+    public List<FooBar> Items { get; set; } = [];
+}
 
-This is just diagnostic. During local dev it might be:
+public class FooBar : ITreeItem
+{
+    public string Name { get; set; } = "";
+}
+```
 
-* your normal Windows account
-* IIS Express identity
-* app pool / process identity
-* or something else depending on host
+Now your grid item becomes:
 
-So I would **not** treat this as “the logged-in user” in a business sense. It’s just useful for debugging if you want to see whether the request identity differs from the server process identity.
+```csharp
+public sealed class MyGridItem : HierarchicalGridItem<ITreeItem, MyGridItem>
+{
+    public required GridItemType Type { get; init; }
 
----
+    public string Name => Item.Name;
+}
+```
 
-# Important limitation
+No casting, no `switch`, no duplicated `Name` property logic. You still have access to the original types when needed:
 
-If by “show login user and impersonated user” you mean:
+```csharp
+if (gridItem.Item is MyObject obj)
+{
+    // ...
+}
 
-> “Show the person who is signed into Windows on the machine **and** the different AD user the browser is running as”
+if (gridItem.Item is FooBar foo)
+{
+    // ...
+}
+```
 
-then **Blazor doesn’t automatically know that first one** in a trustworthy way for the web request. The app only really knows the identity attached to the request.
-
-So the safest statement is:
-
-* **Yes, you can show the authenticated browser/request user**
-* **You can also show a server-side Windows identity for diagnostics**
-* **No, there isn’t a built-in reliable “original desktop user” field automatically available to the app request**
-
----
-
-# My recommendation
-
-For your testing page, I’d label them as:
-
-* **Authenticated Request User**
-* **Server Process Identity**
-
-rather than “login user” and “impersonated user”, because that wording is more accurate and avoids confusion.
-
-If you want, I can give you a **slightly better WhoAmI page** next that specifically highlights:
-
-* **AD user name**
-* **domain**
-* **SID**
-* **authentication scheme**
-* **all group claims**
-* and a big banner saying **“Browser is running as a different user”** when the two identities differ.
+For this API, that's the design I'd recommend because it's simple, type-safe, and keeps your UI model very lightweight.
