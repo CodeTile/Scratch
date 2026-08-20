@@ -1,0 +1,45 @@
+trigger:
+  - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  # Change this to point to your specific solution or test project file if needed
+  solutionPath: '**/*.sln' 
+
+steps:
+# 1. Install .NET 10 SDK
+- task: UseDotNet@2
+  displayName: 'Install .NET 10 SDK'
+  inputs:
+    packageType: 'sdk'
+    version: '10.x'
+
+# 2. Explicit Restore (Recommended for CI pipelines)
+- script: dotnet restore $(solutionPath)
+  displayName: 'Restore NuGet Packages'
+
+# 3. Build the Solution
+- script: dotnet build $(solutionPath) --configuration $(buildConfiguration) --no-restore
+  displayName: 'Build Solution ($(buildConfiguration))'
+
+# 4. Run Tests & Collect Coverage via Native MTP v2 Commands
+# Because xUnit v3 (4.0.0) drops VSTest entirely, we call 'dotnet test' directly 
+# using the --report-azdo and --publish-azdo-test-results flags.
+- script: |
+    dotnet test $(solutionPath) \
+      --configuration $(buildConfiguration) \
+      --no-build \
+      --coverage \
+      --coverage-output-format cobertura \
+      --report-azdo \
+      --publish-azdo-test-results
+  displayName: 'Execute xUnit v3 (4.0.0) MTP Tests & Gather Coverage'
+
+# 5. Publish Code Coverage Results to the Pipeline Dashboard Tab
+- task: PublishCodeCoverageResults@2
+  displayName: 'Publish Cobertura Coverage Report'
+  inputs:
+    summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage.cobertura.xml'
