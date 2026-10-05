@@ -1599,3 +1599,567 @@ Do not guess:
 END OF SETUP
 ============================================================
 ```
+#################################################################################################################
+#################################################################################################################
+
+Yes. I would make the **configuration file the single source of truth** for the relationship:
+
+```
+AD Group → Application Role
+```
+
+ Then everything else consumes that mapping.
+
+ The important design change is that **`Program.cs` should not contain your AD group names**. It should only configure the services/policies.
+
+ ## 1\. `appsettings.json`
+
+ I'd use this structure:
+
+```
+{
+  "ApplicationRoles": {
+    "Viewer": [
+      "AD-Viewers",
+      "AD-ReadOnly",
+      "AD-Users"
+    ],
+    "Editor": [
+      "AD-Editors",
+      "AD-ContentEditors"
+    ],
+    "Manager": [
+      "AD-Managers",
+      "AD-TeamLeaders",
+      "AD-SeniorManagers"
+    ],
+    "Tester": [
+      "AD-Testers",
+      "AD-QA",
+      "AD-TestAutomation"
+    ],
+    "Developer": [
+      "AD-Developers",
+      "AD-SoftwareEngineers",
+      "AD-DevelopmentManagers"
+    ]
+  }
+}
+```
+
+ These are your **human-readable AD group names**.
+
+ So if someone changes:
+
+```
+AD-SoftwareEngineers
+```
+
+ to:
+
+```
+MyCompany-Software-Developers
+```
+
+ you change the configuration, not your C# code.
+
+---
+
+ # 2\. Create `ApplicationRoleOptions`
+
+ Create:
+
+```
+Models/ApplicationRoleOptions.cs
+```
+
+```
+namespace MyAdApp.Models;
+
+public sealed class ApplicationRoleOptions
+{
+    public Dictionary<string, List<string>> Roles { get; set; }
+        = new(StringComparer.OrdinalIgnoreCase);
+}
+```
+
+ This represents:
+
+```
+ApplicationRoleOptions
+    |
+    +-- Viewer
+    |     +-- AD-Viewers
+    |     +-- AD-ReadOnly
+    |
+    +-- Editor
+    |     +-- AD-Editors
+    |
+    +-- Developer
+          +-- AD-Developers
+          +-- AD-SoftwareEngineers
+```
+
+---
+
+ # 3\. Register the configuration
+
+ In `Program.cs`:
+
+```
+using MyAdApp.Models;
+using MyAdApp.Services;
+```
+
+ Then:
+
+```
+builder.Services.Configure<ApplicationRoleOptions>(
+    builder.Configuration.GetSection("ApplicationRoles"));
+```
+
+ So your service registration might look like:
+
+```
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+
+builder.Services.AddFluentUIComponents();
+
+builder.Services.AddAuthentication(
+    IISDefaults.AuthenticationScheme);
+
+builder.Services.AddAuthorization();
+
+builder.Services.Configure<ApplicationRoleOptions>(
+    builder.Configuration.GetSection("ApplicationRoles"));
+```
+
+---
+
+ # 4\. Create the role service
+
+ Create:
+
+```
+Services/IApplicationRoleService.cs
+```
+
+```
+namespace MyAdApp.Services;
+
+public interface IApplicationRoleService
+{
+    bool IsInRole(
+        IEnumerable<string> groups,
+        string role);
+
+    IReadOnlyList<string> GetRoles(
+        IEnumerable<string> groups);
+}
+```
+
+ Then:
+
+```
+Services/ApplicationRoleService.cs
+```
+
+```
+using Microsoft.Extensions.Options;
+using MyAdApp.Models;
+
+namespace MyAdApp.Services;
+
+public sealed class ApplicationRoleService
+    : IApplicationRoleService
+{
+    private readonly ApplicationRoleOptions _options;
+
+    public ApplicationRoleService(
+        IOptions<ApplicationRoleOptions> options)
+    {
+        _options = options.Value;
+    }
+
+    public bool IsInRole(
+        IEnumerable<string> groups,
+        string role)
+    {
+        if (!_options.Roles.TryGetValue(
+                role,
+                out var requiredGroups))
+        {
+            return false;
+        }
+
+        var userGroups = groups.ToHashSet(
+            StringComparer.OrdinalIgnoreCase);
+
+        return requiredGroups.Any(
+            userGroups.Contains);
+    }
+
+    public IReadOnlyList<string> GetRoles(
+        IEnumerable<string> groups)
+    {
+        var userGroups = groups.ToHashSet(
+            StringComparer.OrdinalIgnoreCase);
+
+        return _options.Roles
+            .Where(role =>
+                role.Value.Any(
+                    group => userGroups.Contains(group)))
+            .Select(role => role.Key)
+            .ToList();
+    }
+}
+```
+
+ This is the heart of the design.
+
+ For example, given:
+
+```
+Configuration:
+
+Developer:
+    AD-Developers
+    AD-SoftwareEngineers
+    AD-DevelopmentManagers
+```
+
+ and the current user has:
+
+```
+AD-Users
+AD-SoftwareEngineers
+Domain Users
+```
+
+ this:
+
+```
+GetRoles(groups)
+```
+
+ returns:
+
+```
+Developer
+```
+
+ because the user belongs to **one** of the three configured groups.
+
+---
+
+ # 5\. Register the service
+
+ In `Program.cs`:
+
+```
+builder.Services.AddScoped<IApplicationRoleService,
+    ApplicationRoleService>();
+```
+
+ So you now have:
+
+```
+builder.Services.Configure<ApplicationRoleOptions>(
+    builder.Configuration.GetSection("ApplicationRoles"));
+
+builder.Services.AddScoped<IApplicationRoleService,
+    ApplicationRoleService>();
+```
+
+---
+
+ # 6\. Add roles to `UserContext`
+
+ Your existing model becomes:
+
+```
+namespace MyAdApp.Models;
+
+public sealed class UserContext
+{
+    public bool IsAuthenticated { get; init; }
+
+    public string? LogonName { get; init; }
+
+    public string? DisplayName { get; init; }
+
+    public string? Email { get; init; }
+
+    public string? UserPrincipalName { get; init; }
+
+    public string? SamAccountName { get; init; }
+
+    public string? Department { get; init; }
+
+    public string? JobTitle { get; init; }
+
+    public IReadOnlyList<string> Groups { get; init; }
+        = [];
+
+    public IReadOnlyList<string> Roles { get; init; }
+        = [];
+
+    public IReadOnlyList<UserClaim> Claims { get; init; }
+        = [];
+}
+```
+
+ Now your `UserContext` contains both:
+
+```
+Groups
+```
+
+ and:
+
+```
+Roles
+```
+
+ For example:
+
+```
+Groups:
+    Domain Users
+    AD-Users
+    AD-SoftwareEngineers
+    IT
+
+Roles:
+    Viewer
+    Developer
+```
+
+---
+
+ # 7\. Calculate roles in `UserContextService`
+
+ Inject the role service:
+
+```
+private readonly IApplicationRoleService
+    _applicationRoleService;
+```
+
+ Constructor:
+
+```
+public UserContextService(
+    IApplicationRoleService applicationRoleService,
+    IActiveDirectoryService activeDirectoryService,
+    AuthenticationStateProvider authenticationStateProvider)
+{
+    _applicationRoleService =
+        applicationRoleService;
+
+    _activeDirectoryService =
+        activeDirectoryService;
+
+    _authenticationStateProvider =
+        authenticationStateProvider;
+}
+```
+
+ Then once you've obtained the user's AD groups:
+
+```
+var groups = adUser?.Groups ?? [];
+```
+
+ calculate:
+
+```
+var roles =
+    _applicationRoleService.GetRoles(groups);
+```
+
+ And return:
+
+```
+return new UserContext
+{
+    IsAuthenticated = user.Identity?.IsAuthenticated == true,
+
+    LogonName = user.Identity?.Name,
+
+    DisplayName = adUser?.DisplayName,
+
+    Email = adUser?.Email,
+
+    UserPrincipalName =
+        adUser?.UserPrincipalName,
+
+    SamAccountName =
+        adUser?.SamAccountName,
+
+    Department =
+        adUser?.Department,
+
+    JobTitle =
+        adUser?.JobTitle,
+
+    Groups = groups,
+
+    Roles = roles,
+
+    Claims = claims
+};
+```
+
+---
+
+ # 8\. Now your homepage can show both
+
+```
+<h2>AD Groups</h2>
+
+@foreach (var group in _user.Groups)
+{
+    <FluentBadge>
+        @group
+    </FluentBadge>
+}
+
+<h2>Application Roles</h2>
+
+@foreach (var role in _user.Roles)
+{
+    <FluentBadge>
+        @role
+    </FluentBadge>
+}
+```
+
+ So you could see:
+
+```
+AD GROUPS
+
+Domain Users
+AD-Users
+AD-SoftwareEngineers
+IT
+
+APPLICATION ROLES
+
+Viewer
+Developer
+```
+
+ That's a very useful diagnostic page.
+
+---
+
+ # 9\. One important point about `RequireRole`
+
+ There is a subtlety here.
+
+ Having:
+
+```
+UserContext.Roles
+```
+
+ does **not automatically** make this work:
+
+```
+policy.RequireRole("Developer");
+```
+
+ because ASP.NET Core's authorization system checks the `ClaimsPrincipal`'s roles, not your custom `UserContext.Roles` property.
+
+ So there are two possible designs.
+
+ ### Option A — use `UserContext` for UI/business logic
+
+ You can do:
+
+```
+_user.Roles.Contains("Developer")
+```
+
+ and use a custom authorization handler for actual authorization.
+
+ ### Option B — add your calculated application roles to the `ClaimsPrincipal`
+
+ Then ASP.NET Core can natively do:
+
+```
+[Authorize(Roles = "Developer")]
+```
+
+ and:
+
+```
+<AuthorizeView Roles="Developer">
+```
+
+ For your application, **I'd use Option B**.
+
+ That gives you the cleanest architecture:
+
+```
+                  appsettings.json
+                        |
+                        | truth
+                        v
+                 Role configuration
+                        |
+                        v
+                ApplicationRoleService
+                        |
+                        v
+                 AD group membership
+                        |
+                        v
+                  Application roles
+                        |
+                        v
+                 ClaimsPrincipal
+                        |
+             +----------+----------+
+             |                     |
+             v                     v
+       AuthorizeView          [Authorize]
+        / NavMenu              / Pages
+```
+
+ Then your `NavMenu` doesn't know anything about AD groups.
+
+ It simply says:
+
+```
+<AuthorizeView Roles="Developer">
+    <Authorized>
+        <FluentNavLink Href="/developer">
+            Developer
+        </FluentNavLink>
+    </Authorized>
+</AuthorizeView>
+```
+
+ And the page says:
+
+```
+@attribute [Authorize(Roles = "Developer")]
+```
+
+ Meanwhile, the only place that knows:
+
+```
+AD-Developers
+AD-SoftwareEngineers
+AD-DevelopmentManagers
+```
+
+ is your configuration.
+
+ **That is the design I'd recommend for what you're building.**
+
+ The next step is therefore to wire the calculated roles into the `ClaimsPrincipal` correctly for your **Windows Authentication + Blazor Interactive Server** setup. That is the piece I'd implement before changing your `NavMenu` again.
