@@ -1,129 +1,378 @@
-I'll adapt the category-management page to Fluent UI Blazor v4.x with .NET 10 and Interactive Server, keeping your REST API / `HttpClient` architecture and all five fields:
+Here is just the Edit Category page for your Fluent UI Blazor v4.x application. It uses a single popup to edit the category's name, Fluent UI icon name, enabled status, display order, and parent category.
 
-- Fluent UI icon name
-- Name
-- `IsEnabled` — inline toggle
-- Display order
-- `ParentId` — dropdown
+This assumes you already have `_categories`, `CategoryDto`, and `CategoryApiClient` implemented.
 
-I'll also keep the Add/Edit dialog, row actions menu, validation and delete confirmation. The main changes are the package version and ensuring the component APIs match v4 rather than v5.
-
-The latest stable v4 release I found is 4.14.5, which supports .NET 10.&#x20;
-
-[image](https://www.google.com/s2/favicons?domain=https://www.nuget.org\&sz=32)
-
-Microsoft.FluentUI.AspNetCore.Components 4.14.5
-
-
-
-## 1. Change the package version
+## `Categories.razor` — Edit popup
 
 ```
-dotnet add package Microsoft.FluentUI.AspNetCore.Components --version 4.14.5
-```
-
-If you already installed the v5 icon package, either align its version with the v4 release or remove it if you don't use it. The category page below stores icon names as strings, so it doesn't require the separate icon package.
-
-## 2. Use the v4 setup
-
-In `Program.cs`, retain your existing .NET 10 Interactive Server configuration and register Fluent UI and your API client:
-
-```
-builder.Services.AddHttpClient();
-
-builder.Services.AddFluentUIComponents();
-
-builder.Services.AddHttpClient<CategoryApiClient>(client =>
-{
-    client.BaseAddress = new Uri(
-        builder.Configuration["ApiBaseUrl"]
-        ?? "https://localhost:7001/");
-});
-```
-
-In `Components/_Imports.razor`:
-
-```
-@using Microsoft.FluentUI.AspNetCore.Components
-@using YourApp.Models
-@using YourApp.Services
 @using Microsoft.AspNetCore.Components.Forms
+
+@if (_dialogOpen && _edit is not null)
+{
+    <div class="edit-modal-backdrop">
+        <section class="edit-modal"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-labelledby="edit-category-title">
+
+            <header class="edit-modal-header">
+                <h2 id="edit-category-title">Edit category</h2>
+
+                <button type="button"
+                        class="close-button"
+                        aria-label="Close"
+                        disabled="@_saving"
+                        @onclick="CloseEdit">
+                    &times;
+                </button>
+            </header>
+
+            <EditForm Model="_edit" OnValidSubmit="SaveEditAsync">
+                <DataAnnotationsValidator />
+
+                <div class="edit-modal-body">
+
+                    <div class="form-field">
+                        <label for="category-name">Name</label>
+                        <InputText id="category-name"
+                                   class="form-control"
+                                   @bind-Value="_edit.Name"
+                                   disabled="@_saving" />
+                        <ValidationMessage For="@(() => _edit.Name)" />
+                    </div>
+
+                    <div class="form-field">
+                        <label for="category-icon">Fluent UI icon name</label>
+                        <InputText id="category-icon"
+                                   class="form-control"
+                                   @bind-Value="_edit.IconName"
+                                   disabled="@_saving" />
+                        <ValidationMessage For="@(() => _edit.IconName)" />
+                    </div>
+
+                    <div class="form-field">
+                        <label for="category-parent">Parent category</label>
+                        <InputSelect id="category-parent"
+                                     class="form-control"
+                                     @bind-Value="_edit.ParentId"
+                                     disabled="@_saving">
+                            <option value="">No parent (root)</option>
+
+                            @foreach (var parent in AvailableParents())
+                            {
+                                <option value="@parent.Id">
+                                    @parent.Name
+                                </option>
+                            }
+                        </InputSelect>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="category-order">Display order</label>
+                        <InputNumber id="category-order"
+                                     class="form-control"
+                                     @bind-Value="_edit.DisplayOrder"
+                                     disabled="@_saving" />
+                        <ValidationMessage For="@(() => _edit.DisplayOrder)" />
+                    </div>
+
+                    <div class="form-checkbox">
+                        <InputCheckbox id="category-enabled"
+                                       @bind-Value="_edit.IsEnabled"
+                                       disabled="@_saving" />
+                        <label for="category-enabled">Enabled</label>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(_formError))
+                    {
+                        <div class="form-error" role="alert">
+                            @_formError
+                        </div>
+                    }
+                </div>
+
+                <footer class="edit-modal-footer">
+                    <button type="button"
+                            class="button-secondary"
+                            disabled="@_saving"
+                            @onclick="CloseEdit">
+                        Cancel
+                    </button>
+
+                    <button type="submit"
+                            class="button-primary"
+                            disabled="@_saving">
+                        @(_saving ? "Saving..." : "Save changes")
+                    </button>
+                </footer>
+            </EditForm>
+        </section>
+    </div>
+}
+
+@code {
+    private CategoryDto? _edit;
+    private bool _dialogOpen;
+    private bool _saving;
+    private string? _formError;
+
+    private void OpenEdit(CategoryDto category)
+    {
+        // Copy the record so Cancel doesn't modify the grid data.
+        _edit = new CategoryDto
+        {
+            Id = category.Id,
+            Name = category.Name,
+            IconName = category.IconName,
+            IsEnabled = category.IsEnabled,
+            DisplayOrder = category.DisplayOrder,
+            ParentId = category.ParentId
+        };
+
+        _formError = null;
+        _dialogOpen = true;
+    }
+
+    private void CloseEdit()
+    {
+        if (_saving)
+            return;
+
+        _dialogOpen = false;
+        _edit = null;
+        _formError = null;
+    }
+
+    private IEnumerable<CategoryDto> AvailableParents()
+    {
+        if (_edit is null)
+            return Enumerable.Empty<CategoryDto>();
+
+        var excludedIds = GetDescendantIds(_edit.Id);
+
+        return _categories
+            .Where(c => c.Id != _edit.Id &&
+                        !excludedIds.Contains(c.Id))
+            .OrderBy(c => c.Name);
+    }
+
+    private HashSet<int> GetDescendantIds(int categoryId)
+    {
+        var descendants = new HashSet<int>();
+        var pending = new Stack<int>();
+        pending.Push(categoryId);
+
+        while (pending.Count > 0)
+        {
+            var currentId = pending.Pop();
+
+            foreach (var child in _categories.Where(
+                         c => c.ParentId == currentId))
+            {
+                if (descendants.Add(child.Id))
+                    pending.Push(child.Id);
+            }
+        }
+
+        return descendants;
+    }
+
+    private async Task SaveEditAsync()
+    {
+        if (_edit is null || _saving)
+            return;
+
+        _formError = null;
+
+        if (_edit.ParentId == _edit.Id ||
+            (_edit.ParentId.HasValue &&
+             GetDescendantIds(_edit.Id)
+                 .Contains(_edit.ParentId.Value)))
+        {
+            _formError =
+                "A category cannot be its own parent or a descendant of itself.";
+            return;
+        }
+
+        _saving = true;
+
+        try
+        {
+            await CategoryApi.UpdateAsync(_edit);
+
+            var index = _categories.FindIndex(
+                c => c.Id == _edit.Id);
+
+            if (index >= 0)
+                _categories[index] = _edit;
+
+            // Keep the grid sorted.
+            var sorted = _categories
+                .OrderBy(c => c.DisplayOrder)
+                .ThenBy(c => c.Name)
+                .ToList();
+
+            _categories.Clear();
+            _categories.AddRange(sorted);
+
+            _dialogOpen = false;
+            _edit = null;
+        }
+        catch (HttpRequestException)
+        {
+            _formError =
+                "Unable to save the category. Please check the API connection.";
+        }
+        catch (Exception)
+        {
+            _formError =
+                "An unexpected error occurred while saving the category.";
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}
 ```
 
-In `MainLayout.razor`, use the v4 providers:
+## CSS
+
+Add this to your page's stylesheet or your existing category CSS file.
 
 ```
-<FluentToastProvider />
-<FluentDialogProvider />
-<FluentTooltipProvider />
-<FluentMessageBarProvider />
+.edit-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: rgb(0 0 0 / 45%);
+}
+
+.edit-modal {
+    width: 100%;
+    max-width: 520px;
+    max-height: 90vh;
+    overflow-y: auto;
+    background: var(--neutral-layer-1, #fff);
+    color: var(--neutral-foreground-rest, #242424);
+    border-radius: 8px;
+    box-shadow: 0 12px 40px rgb(0 0 0 / 25%);
+}
+
+.edit-modal-header,
+.edit-modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+}
+
+.edit-modal-header {
+    border-bottom: 1px solid #ddd;
+}
+
+.edit-modal-header h2 {
+    margin: 0;
+    font-size: 1.25rem;
+}
+
+.edit-modal-body {
+    display: grid;
+    gap: 1rem;
+    padding: 1.25rem;
+}
+
+.form-field {
+    display: grid;
+    gap: 0.4rem;
+}
+
+.form-field label,
+.form-checkbox label {
+    font-weight: 600;
+}
+
+.form-control {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 38px;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid #888;
+    border-radius: 4px;
+    background: white;
+    color: #242424;
+    font: inherit;
+}
+
+.form-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.form-error {
+    padding: 0.75rem;
+    color: #a4262c;
+    background: #fde7e9;
+    border-radius: 4px;
+}
+
+.edit-modal-footer {
+    justify-content: flex-end;
+    border-top: 1px solid #ddd;
+}
+
+.button-primary,
+.button-secondary,
+.close-button {
+    padding: 0.55rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font: inherit;
+}
+
+.button-primary {
+    color: white;
+    background: #0078d4;
+    border: 1px solid #0078d4;
+}
+
+.button-secondary {
+    color: #242424;
+    background: white;
+    border: 1px solid #888;
+}
+
+.close-button {
+    padding: 0.2rem 0.6rem;
+    background: transparent;
+    border: none;
+    font-size: 1.5rem;
+}
+
+button:disabled,
+.form-control:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
 ```
 
-Keep the CSS bundle reference in the document head:
+## Connect it to your existing grid
 
-```
-<link href="_content/Microsoft.FluentUI.AspNetCore.Components/Microsoft.FluentUI.AspNetCore.Components.bundle.scp.css"
-      rel="stylesheet" />
-```
-
-## 3. What changes in the category page?
-
-Your model (`CategoryDto.cs`) and REST API client (`CategoryApiClient.cs`) can remain unchanged. The main UI changes are these:
-
-- Use `Appearance.Accent` and `Appearance.Neutral` for v4 button styling.
-- Keep `FluentDataGrid`, `PropertyColumn` and `TemplateColumn`.
-- Keep the custom modal and row menu; neither depends on v5's dialog API.
-- Keep the `InputCheckbox` for the enabled state and `InputSelect` for `ParentId`.
-
-For example, the v4 Add button is:
+Add an Edit button to each row, passing the category for that row:
 
 ```
 <FluentButton Appearance="Appearance.Accent"
-              OnClick="OpenCreateDialog">
-    Add category
+              OnClick="@(() => OpenEdit(context))">
+    Edit
 </FluentButton>
 ```
 
-And the v4 grid retains this structure:
+Replace `context` with your grid's actual row variable if it has a different name.
 
-```
-<FluentDataGrid TGridItem="CategoryDto"
-                Items="@_categories.AsQueryable()"
-                ItemKey="@(c => c.Id)">
-
-    <PropertyColumn TGridItem="CategoryDto"
-                    Property="@(c => c.IconName)"
-                    Title="Icon name" />
-
-    <PropertyColumn TGridItem="CategoryDto"
-                    Property="@(c => c.Name)"
-                    Title="Name" />
-
-    <TemplateColumn TGridItem="CategoryDto" Title="Enabled">
-        <InputCheckbox @bind-Value="context.IsEnabled" />
-    </TemplateColumn>
-
-    <PropertyColumn TGridItem="CategoryDto"
-                    Property="@(c => c.DisplayOrder)"
-                    Title="Order" />
-
-    <TemplateColumn TGridItem="CategoryDto" Title="Parent">
-        @ParentName(context.ParentId)
-    </TemplateColumn>
-
-    <TemplateColumn TGridItem="CategoryDto" Title="Actions">
-        @* Keep the Edit/Delete row menu from the earlier page. *@
-    </TemplateColumn>
-</FluentDataGrid>
-```
-
-Important: the checkbox above only changes the bound object. To persist the change through your REST API, keep the earlier `ToggleEnabledAsync` handler and use `Value`, `ValueChanged` and `ValueExpression` rather than a simple `@bind-Value`.
-
-The rest of the earlier `Categories.razor` page and its CSS can be retained, subject to compiling against your exact v4 package. The complete API client, validation, parent-cycle checks and save/delete handlers don't need to be rewritten just to change Fluent UI versions.
-
-For the v4 component API reference, use the [Fluent UI Blazor v4 documentation](https://www.fluentui-blazor.net/), and verify the project with:
-
-```
-dotnet restore
-dotnet build
-```
+Important: This code assumes `_categories` is a `List<CategoryDto>` and `CategoryApi.UpdateAsync` accepts a `CategoryDto`. Keep your existing API client and grid; you only need to integrate the popup, its state, and the Edit button.
