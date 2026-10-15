@@ -553,3 +553,113 @@ Add this to your existing stylesheet:
 ```
 
 Important: The helper checks the validation messages for each field. It will show a red border for errors reported by Blazor's validation system, such as `[Required]` or `[Range]` attributes. Your custom parent-category error is currently stored in `_formError`, not in the `EditContext`, so it will display the form-level error message but won't automatically mark a particular field red.
+
+#########################################################################
+The likely cause is that the Save button is checking `HasChanges`, but the snapshot or form state isn't being updated consistently. In Blazor, the safest fix is to compare the edited model with the original snapshot and make sure the component re-renders when an input changes.
+
+You can keep your existing validation and red borders. The key is to make change detection reliable.
+
+## 1. Add a change-tracking flag
+
+Add this field to your `@code` block:
+
+```
+private bool _hasChanges;
+```
+
+Keep your existing `HasChanges` property:
+
+```
+private bool HasChanges =>
+    _edit is not null &&
+    _original is not null &&
+    (
+        _edit.Name != _original.Name ||
+        _edit.IconName != _original.IconName ||
+        _edit.IsEnabled != _original.IsEnabled ||
+        _edit.DisplayOrder != _original.DisplayOrder ||
+        _edit.ParentId != _original.ParentId
+    );
+```
+
+## 2. Track changes through the EditContext
+
+Add this method:
+
+```
+private void HandleFieldChanged(
+    object? sender,
+    FieldChangedEventArgs e)
+{
+    _hasChanges = HasChanges;
+    _ = InvokeAsync(StateHasChanged);
+}
+```
+
+In `OpenEdit()`, after creating `_edit` and `_original`, initialise the context and subscribe to changes:
+
+```
+_editContext = new EditContext(_edit);
+_editContext.OnFieldChanged += HandleFieldChanged;
+_hasChanges = false;
+```
+
+This explicitly recalculates the change state whenever a form field changes.
+
+## 3. Update the Save button
+
+Use `_hasChanges` instead of `HasChanges`:
+
+```
+<button type="submit"
+        class="button-primary"
+        disabled="@(_saving || !_hasChanges)">
+    @(_saving ? "Saving..." : "Save changes")
+</button>
+```
+
+Also update the start of `SaveEditAsync()`:
+
+```
+if (_edit is null || _saving || !_hasChanges)
+    return;
+```
+
+## 4. Reset the state when closing
+
+In `CloseEdit()`, unsubscribe before clearing the context:
+
+```
+private void CloseEdit()
+{
+    if (_saving)
+        return;
+
+    if (_editContext is not null)
+        _editContext.OnFieldChanged -= HandleFieldChanged;
+
+    _dialogOpen = false;
+    _edit = null;
+    _original = null;
+    _editContext = null;
+    _hasChanges = false;
+    _formError = null;
+}
+```
+
+After a successful save, also unsubscribe and reset:
+
+```
+if (_editContext is not null)
+    _editContext.OnFieldChanged -= HandleFieldChanged;
+
+_dialogOpen = false;
+_edit = null;
+_original = null;
+_editContext = null;
+_hasChanges = false;
+```
+
+Expected result: The Save button enables when a field changes, disables again when all values match the original snapshot, and stays disabled during saving.
+
+Note that Blazor's standard `InputText` updates on the `change` event, normally when you leave the field. If you need the button to enable on every keystroke, the text inputs will also need to use `oninput` binding.
