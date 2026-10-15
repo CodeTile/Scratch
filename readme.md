@@ -1,10 +1,15 @@
-Here is just the Edit Category page for your Fluent UI Blazor v4.x application. It uses a single popup to edit the category's name, Fluent UI icon name, enabled status, display order, and parent category.
+Below is the regenerated `Categories.razor` code and CSS, incorporating the changes discussed:
 
-This assumes you already have `_categories`, `CategoryDto`, and `CategoryApiClient` implemented.
+- Save changes is disabled until a field changes.
+- Save becomes disabled again if all fields are restored to their original values.
+- Save and the form fields are disabled while saving.
+- The Display order input is fixed at 60px wide.
+- The original category is copied separately so editing doesn't modify the grid data before saving.
 
-## `Categories.razor` — Edit popup
+## `Categories.razor`
 
 ```
+
 @using Microsoft.AspNetCore.Components.Forms
 
 @if (_dialogOpen && _edit is not null)
@@ -70,7 +75,7 @@ This assumes you already have `_categories`, `CategoryDto`, and `CategoryApiClie
                     <div class="form-field">
                         <label for="category-order">Display order</label>
                         <InputNumber id="category-order"
-                                     class="form-control"
+                                     class="form-control category-order-input"
                                      @bind-Value="_edit.DisplayOrder"
                                      disabled="@_saving" />
                         <ValidationMessage For="@(() => _edit.DisplayOrder)" />
@@ -101,7 +106,7 @@ This assumes you already have `_categories`, `CategoryDto`, and `CategoryApiClie
 
                     <button type="submit"
                             class="button-primary"
-                            disabled="@_saving">
+                            disabled="@(_saving || !HasChanges)">
                         @(_saving ? "Saving..." : "Save changes")
                     </button>
                 </footer>
@@ -112,14 +117,36 @@ This assumes you already have `_categories`, `CategoryDto`, and `CategoryApiClie
 
 @code {
     private CategoryDto? _edit;
+    private CategoryDto? _original;
+
     private bool _dialogOpen;
     private bool _saving;
     private string? _formError;
 
+    private bool HasChanges =>
+        _edit is not null &&
+        _original is not null &&
+        (
+            _edit.Name != _original.Name ||
+            _edit.IconName != _original.IconName ||
+            _edit.IsEnabled != _original.IsEnabled ||
+            _edit.DisplayOrder != _original.DisplayOrder ||
+            _edit.ParentId != _original.ParentId
+        );
+
     private void OpenEdit(CategoryDto category)
     {
-        // Copy the record so Cancel doesn't modify the grid data.
         _edit = new CategoryDto
+        {
+            Id = category.Id,
+            Name = category.Name,
+            IconName = category.IconName,
+            IsEnabled = category.IsEnabled,
+            DisplayOrder = category.DisplayOrder,
+            ParentId = category.ParentId
+        };
+
+        _original = new CategoryDto
         {
             Id = category.Id,
             Name = category.Name,
@@ -140,6 +167,7 @@ This assumes you already have `_categories`, `CategoryDto`, and `CategoryApiClie
 
         _dialogOpen = false;
         _edit = null;
+        _original = null;
         _formError = null;
     }
 
@@ -179,7 +207,7 @@ This assumes you already have `_categories`, `CategoryDto`, and `CategoryApiClie
 
     private async Task SaveEditAsync()
     {
-        if (_edit is null || _saving)
+        if (_edit is null || _saving || !HasChanges)
             return;
 
         _formError = null;
@@ -206,7 +234,6 @@ This assumes you already have `_categories`, `CategoryDto`, and `CategoryApiClie
             if (index >= 0)
                 _categories[index] = _edit;
 
-            // Keep the grid sorted.
             var sorted = _categories
                 .OrderBy(c => c.DisplayOrder)
                 .ThenBy(c => c.Name)
@@ -217,6 +244,7 @@ This assumes you already have `_categories`, `CategoryDto`, and `CategoryApiClie
 
             _dialogOpen = false;
             _edit = null;
+            _original = null;
         }
         catch (HttpRequestException)
         {
@@ -234,13 +262,13 @@ This assumes you already have `_categories`, `CategoryDto`, and `CategoryApiClie
         }
     }
 }
+
 ```
 
 ## CSS
 
-Add this to your page's stylesheet or your existing category CSS file.
-
 ```
+
 .edit-modal-backdrop {
     position: fixed;
     inset: 0;
@@ -309,6 +337,13 @@ Add this to your page's stylesheet or your existing category CSS file.
     font: inherit;
 }
 
+/* Display order input: fixed width of 60px */
+.form-control.category-order-input {
+    width: 60px;
+    min-width: 60px;
+    max-width: 60px;
+}
+
 .form-checkbox {
     display: flex;
     align-items: center;
@@ -360,19 +395,161 @@ button:disabled,
     cursor: not-allowed;
     opacity: 0.6;
 }
-```
-
-## Connect it to your existing grid
-
-Add an Edit button to each row, passing the category for that row:
 
 ```
-<FluentButton Appearance="Appearance.Accent"
-              OnClick="@(() => OpenEdit(context))">
-    Edit
-</FluentButton>
+
+### Important integration notes
+
+- Keep your existing `_categories`, `CategoryDto`, and `CategoryApi` definitions.
+- Keep your existing grid Edit button calling `OpenEdit(category)`.
+- The CSS class `category-order-input` ensures the 60px width overrides `.form-control` without changing other fields.
+- `HasChanges` checks all five editable properties, including changes that are subsequently reverted.
+
+I have preserved the types and API calls from your supplied code. The code has not been compiled against your application, so a completely error-free build cannot be guaranteed without checking the actual project and DTO definitions.
+
+You can use Blazor's built-in `EditContext` validation state to add a red border around fields that have validation errors, while keeping the existing 60px Display order input and Save button change detection.
+
+## 1. Update the form fields
+
+Add the `class` attribute conditionally using `EditContext` and `FieldIdentifier`.
+
+For example, replace the Name field with:
+
 ```
 
-Replace `context` with your grid's actual row variable if it has a different name.
+<div class="form-field">
+    <label for="category-name">Name</label>
+    <InputText id="category-name"
+               class="@GetFieldCssClass(() => _edit!.Name)"
+               @bind-Value="_edit.Name"
+               disabled="@_saving" />
+    <ValidationMessage For="@(() => _edit.Name)" />
+</div>
 
-Important: This code assumes `_categories` is a `List<CategoryDto>` and `CategoryApi.UpdateAsync` accepts a `CategoryDto`. Keep your existing API client and grid; you only need to integrate the popup, its state, and the Edit button.
+```
+
+Apply the same pattern to the other fields:
+
+```
+
+<div class="form-field">
+    <label for="category-icon">Fluent UI icon name</label>
+    <InputText id="category-icon"
+               class="@GetFieldCssClass(() => _edit!.IconName)"
+               @bind-Value="_edit.IconName"
+               disabled="@_saving" />
+    <ValidationMessage For="@(() => _edit.IconName)" />
+</div>
+
+<div class="form-field">
+    <label for="category-parent">Parent category</label>
+    <InputSelect id="category-parent"
+                 class="@GetFieldCssClass(() => _edit!.ParentId)"
+                 @bind-Value="_edit.ParentId"
+                 disabled="@_saving">
+        <option value="">No parent (root)</option>
+        @foreach (var parent in AvailableParents())
+        {
+            <option value="@parent.Id">@parent.Name</option>
+        }
+    </InputSelect>
+</div>
+
+<div class="form-field">
+    <label for="category-order">Display order</label>
+    <InputNumber id="category-order"
+                 class="@GetFieldCssClass(() => _edit!.DisplayOrder) category-order-input"
+                 @bind-Value="_edit.DisplayOrder"
+                 disabled="@_saving" />
+    <ValidationMessage For="@(() => _edit.DisplayOrder)" />
+</div>
+
+```
+
+## 2. Add the validation helper
+
+Add this method inside your existing `@code` block:
+
+```
+
+private string GetFieldCssClass<TValue>(
+    System.Linq.Expressions.Expression<Func<TValue>> accessor)
+{
+    if (_edit is null)
+        return "form-control";
+
+    var field = FieldIdentifier.Create(accessor);
+
+    var hasErrors = _editContext is not null &&
+                    _editContext.GetValidationMessages(field).Any();
+
+    return hasErrors
+        ? "form-control field-error"
+        : "form-control";
+}
+
+```
+
+Add this field as well:
+
+```
+private EditContext? _editContext;
+```
+
+Then, in `OpenEdit()`, after creating `_edit` and `_original`, initialise the context:
+
+```
+_editContext = new EditContext(_edit);
+```
+
+Update your form to use that context:
+
+```
+<EditForm EditContext="_editContext"
+          OnValidSubmit="SaveEditAsync">
+    <DataAnnotationsValidator />
+    ...
+</EditForm>
+```
+
+When closing or successfully saving, clear the context:
+
+```
+_editContext = null;
+```
+
+## 3. Add the red-border CSS
+
+Add this to your existing stylesheet:
+
+```
+
+/* Invalid fields */
+.form-control.field-error {
+    border: 2px solid #d13438;
+    outline: none;
+}
+
+/* Keep the red border visible when focused */
+.form-control.field-error:focus {
+    border-color: #d13438;
+    box-shadow: 0 0 0 1px #d13438;
+}
+
+/* Validation message beneath the field */
+.validation-message {
+    color: #d13438;
+    font-size: 0.875rem;
+}
+
+/* Display order remains 60px wide */
+.form-control.category-order-input {
+    width: 60px;
+    min-width: 60px;
+    max-width: 60px;
+    box-sizing: border-box;
+}
+
+```
+
+Important: The helper checks the validation messages for each field. It will show a red border for errors reported by Blazor's validation system, such as `[Required]` or `[Range]` attributes. Your custom parent-category error is currently stored in `_formError`, not in the `EditContext`, so it will display the form-level error message but won't automatically mark a particular field red.
