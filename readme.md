@@ -685,7 +685,7 @@ flowchart TD
     Y --> Z[JWT validation]
     Z --> AA[API permission validation]
     AA --> AB[Business Logic]
-'''
+```
 	
 ## 12. Important deployment considerations
 
