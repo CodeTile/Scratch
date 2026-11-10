@@ -631,6 +631,7 @@ This is especially important with Interactive Server because a long-lived Signal
 
 This is the authentication design I would now implement.
 
+```mermaid
 flowchart TD
     A[User opens FluentUI Portal] --> B{Valid Identity cookie?}
 
@@ -684,6 +685,7 @@ flowchart TD
     Y --> Z[JWT validation]
     Z --> AA[API permission validation]
     AA --> AB[Business Logic]
+'''
 	
 ## 12. Important deployment considerations
 
