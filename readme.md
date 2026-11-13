@@ -1,3 +1,174 @@
+iframe previewer
+
+There is one caveat: an iframe `load` event alone cannot confirm successful rendering for third-party websites. But we can use it as a best-effort test.
+
+## **1. Admin callback**
+
+```
+private void HandlePreviewTestCompleted(bool canDisplay)
+{
+    Card.OpenInNewTab = !canDisplay;
+}
+```
+
+## **2. IframePreview\.razor**
+
+The important part is to default to failure and only change the result when the iframe fires its load event.
+
+```
+@implements IAsyncDisposable
+
+<div class="iframe-preview">
+
+    @if (IsTesting)
+    {
+        <p>Testing website preview...</p>
+    }
+    else if (CanDisplay)
+    {
+        <p>Preview loaded.</p>
+    }
+    else
+    {
+        <p>Website cannot be previewed.</p>
+    }
+
+    @if (IsValidUrl)
+    {
+        <iframe @key="Url"
+                src="@Url"
+                title="Website preview"
+                class="iframe-preview-frame"
+                @onload="HandleLoadAsync">
+        </iframe>
+    }
+
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public string Url { get; set; } = string.Empty;
+
+    [Parameter]
+    public EventCallback<bool> OnTestCompleted { get; set; }
+
+    private bool IsTesting { get; set; }
+
+    private bool CanDisplay { get; set; }
+
+    private bool IsValidUrl { get; set; }
+
+    private bool TestCompleted { get; set; }
+
+    private CancellationTokenSource? TimeoutSource;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        TimeoutSource?.Cancel();
+        TimeoutSource?.Dispose();
+
+        TestCompleted = false;
+        CanDisplay = false;
+        IsTesting = false;
+
+        IsValidUrl =
+            Uri.TryCreate(Url, UriKind.Absolute, out var uri) &&
+            (uri.Scheme == Uri.UriSchemeHttps ||
+             uri.Scheme == Uri.UriSchemeHttp);
+
+        if (!IsValidUrl)
+        {
+            TestCompleted = true;
+            await OnTestCompleted.InvokeAsync(false);
+            return;
+        }
+
+        IsTesting = true;
+
+        TimeoutSource = new CancellationTokenSource();
+
+        _ = MonitorTimeoutAsync(TimeoutSource.Token);
+    }
+
+    private async Task MonitorTimeoutAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(
+                TimeSpan.FromSeconds(10),
+                cancellationToken);
+
+            await InvokeAsync(async () =>
+            {
+                if (!TestCompleted)
+                {
+                    await CompleteTestAsync(false);
+                }
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when the test completes.
+        }
+    }
+
+    private async Task HandleLoadAsync()
+    {
+        if (!TestCompleted)
+        {
+            await CompleteTestAsync(true);
+        }
+    }
+
+    private async Task CompleteTestAsync(bool canDisplay)
+    {
+        if (TestCompleted)
+        {
+            return;
+        }
+
+        TestCompleted = true;
+        IsTesting = false;
+        CanDisplay = canDisplay;
+
+        TimeoutSource?.Cancel();
+
+        await OnTestCompleted.InvokeAsync(canDisplay);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        TimeoutSource?.Cancel();
+        TimeoutSource?.Dispose();
+
+        return ValueTask.CompletedTask;
+    }
+}
+```
+
+## **3. Admin page**
+
+```
+<IframePreview @key="Card.Url"
+               Url="@Card.Url"
+               OnTestCompleted="HandlePreviewTestCompleted" />
+```
+
+```
+private void HandlePreviewTestCompleted(bool canDisplay)
+{
+    Card.OpenInNewTab = !canDisplay;
+}
+```
+
+**Important:** This implementation handles invalid URLs and timeouts correctly, but a website that blocks iframe embedding can still trigger `onload`. There is no universally reliable browser-only way to distinguish that case for arbitrary external websites.
+
+For your admin workflow, I'd treat this as a best-effort preview check and let the administrator manually override `OpenInNewTab` if necessary.
+=========================================================================================
+=========================================================================================
+=========================================================================================
+
 #Navigation control
 
 1. NavigableFluentCard.razor – your reusable Fluent UI card, accepting your existing model.
