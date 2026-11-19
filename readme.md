@@ -1,778 +1,1243 @@
-iframe previewer
+# **Complete implementation — .NET 10 / C# 14**
 
-There is one caveat: an iframe `load` event alone cannot confirm successful rendering for third-party websites. But we can use it as a best-effort test.
+We'll build this in dependency order, so each section can be implemented and tested before moving to the next. This is **Part 1: SQL Server and database-first preparation**. It establishes the database contract for the rest of the code.
 
-## **1. Admin callback**
+The final decisions are:
+
+- Local accounts authenticate with application passwords and access business functionality.
+- AD accounts authenticate through Active Directory and are strictly administration-only.
+- AD users are provisioned into `AspNetUsers` on first eligible login.
+- Any one of several configured AD groups grants administrator eligibility.
+- AD group names are configured by display name in `appsettings.json`.
+- Local users can be assigned service accounts.
+- Self-service password changes reject the current and previous 19 passwords.
+- All relevant changes are audited.
+- Existing generated entities and the database context are retained.
+
+# **Part 1 — SQL Server**
+
+## **1. Database assumptions and safeguards**
+
+We will retain your existing structure:
 
 ```
-private void HandlePreviewTestCompleted(bool canDisplay)
+MyApplication.Data/
+├── Contexts/
+│   └── ExistingDatabaseContext.cs
+├── Entities/
+│   ├── AspNetUser.cs
+│   ├── ServiceAccount.cs
+│   └── ...
+└── Infrastructure/
+    └── IocStartup.cs
+```
+
+The scripts below assume:
+
+- The existing user table is `dbo.AspNetUsers`.
+- Its primary key is `Id`.
+- Its key type is `NVARCHAR(450)`.
+- Your existing `AspNetUsers` table is not dropped or recreated.
+- `ServiceAccount` is an existing business table whose key definition must be checked before we add a foreign key.
+
+**Important:** The scripts deliberately do not create a foreign key to `ServiceAccount`, because its actual key type and column are not known. We will establish that relationship after checking the existing schema.
+
+## **2. Preflight script**
+
+Run this before the migration scripts.
+
+```
+
+SET NOCOUNT ON;
+
+IF OBJECT_ID(N'dbo.AspNetUsers', N'U') IS NULL
+    THROW 50001, 'dbo.AspNetUsers does not exist.', 1;
+
+IF COL_LENGTH(N'dbo.AspNetUsers', N'Id') IS NULL
+    THROW 50002, 'dbo.AspNetUsers.Id does not exist.', 1;
+
+SELECT
+    s.name AS SchemaName,
+    t.name AS TableName,
+    c.name AS ColumnName,
+    ty.name AS DataType,
+    c.max_length AS MaxLengthInBytes,
+    c.is_nullable AS IsNullable
+FROM sys.columns AS c
+INNER JOIN sys.tables AS t
+    ON t.object_id = c.object_id
+INNER JOIN sys.schemas AS s
+    ON s.schema_id = t.schema_id
+INNER JOIN sys.types AS ty
+    ON ty.user_type_id = c.user_type_id
+WHERE s.name = N'dbo'
+  AND t.name IN (N'AspNetUsers', N'ServiceAccount')
+ORDER BY
+    t.name,
+    c.column_id;
+
+SELECT
+    i.name AS IndexName,
+    i.is_primary_key AS IsPrimaryKey,
+    i.is_unique AS IsUnique,
+    i.filter_definition AS FilterDefinition
+FROM sys.indexes AS i
+WHERE i.object_id = OBJECT_ID(N'dbo.AspNetUsers')
+ORDER BY i.name;
+
+SELECT
+    NormalizedUserName,
+    COUNT(*) AS DuplicateCount
+FROM dbo.AspNetUsers
+WHERE NormalizedUserName IS NOT NULL
+GROUP BY NormalizedUserName
+HAVING COUNT(*) > 1;
+
+```
+
+Confirm that `AspNetUsers.Id` is `NVARCHAR(450)` (900 bytes). If not, the new `UserId` columns and foreign keys must be adjusted to match its actual type and collation.
+
+## **3. Script 001 — Extend AspNetUsers**
+
+This adds application-specific properties without changing the existing Identity columns.
+
+```
+
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    IF OBJECT_ID(N'dbo.AspNetUsers', N'U') IS NULL
+        THROW 50001, 'dbo.AspNetUsers does not exist.', 1;
+
+    IF COL_LENGTH(N'dbo.AspNetUsers', N'AuthenticationProvider') IS NULL
+    BEGIN
+        ALTER TABLE dbo.AspNetUsers
+        ADD AuthenticationProvider TINYINT NOT NULL
+            CONSTRAINT DF_AspNetUsers_AuthenticationProvider
+            DEFAULT (0);
+    END;
+
+    IF COL_LENGTH(N'dbo.AspNetUsers', N'ActiveDirectoryObjectId') IS NULL
+    BEGIN
+        ALTER TABLE dbo.AspNetUsers
+        ADD ActiveDirectoryObjectId NVARCHAR(256) NULL;
+    END;
+
+    IF COL_LENGTH(N'dbo.AspNetUsers', N'DisplayName') IS NULL
+    BEGIN
+        ALTER TABLE dbo.AspNetUsers
+        ADD DisplayName NVARCHAR(256) NULL;
+    END;
+
+    IF COL_LENGTH(N'dbo.AspNetUsers', N'Department') IS NULL
+    BEGIN
+        ALTER TABLE dbo.AspNetUsers
+        ADD Department NVARCHAR(128) NULL;
+    END;
+
+    IF COL_LENGTH(N'dbo.AspNetUsers', N'IsActive') IS NULL
+    BEGIN
+        ALTER TABLE dbo.AspNetUsers
+        ADD IsActive BIT NOT NULL
+            CONSTRAINT DF_AspNetUsers_IsActive
+            DEFAULT (1);
+    END;
+
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM sys.indexes
+        WHERE object_id = OBJECT_ID(N'dbo.AspNetUsers')
+          AND name = N'UX_AspNetUsers_ActiveDirectoryObjectId'
+    )
+    BEGIN
+        CREATE UNIQUE NONCLUSTERED INDEX
+            UX_AspNetUsers_ActiveDirectoryObjectId
+        ON dbo.AspNetUsers (ActiveDirectoryObjectId)
+        WHERE ActiveDirectoryObjectId IS NOT NULL;
+    END;
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+    THROW;
+END CATCH;
+
+```
+
+Authentication provider values:
+
+| Value | Meaning          |
+| ----- | ---------------- |
+| 0     | Local            |
+| 1     | Active Directory |
+
+Existing users receive provider value `0`. If AD users already exist, migrate them explicitly using a reliable AD identifier. Do not infer their provider from email addresses or usernames.
+
+`ActiveDirectoryObjectId` stores the AD user's immutable object GUID in canonical string form. The unique filtered index prevents the same AD identity being provisioned twice.
+
+## **4. Script 002 — UserPasswordHistory**
+
+Stores previous local password hashes.
+
+```
+
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    IF OBJECT_ID(N'dbo.AspNetUsers', N'U') IS NULL
+        THROW 50001, 'dbo.AspNetUsers does not exist.', 1;
+
+    IF OBJECT_ID(N'dbo.UserPasswordHistory', N'U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.UserPasswordHistory
+        (
+            Id BIGINT IDENTITY(1,1) NOT NULL,
+
+            UserId NVARCHAR(450) NOT NULL,
+
+            PasswordHash NVARCHAR(MAX) NOT NULL,
+
+            ChangedUtc DATETIME2(7) NOT NULL
+                CONSTRAINT DF_UserPasswordHistory_ChangedUtc
+                DEFAULT (SYSUTCDATETIME()),
+
+            CONSTRAINT PK_UserPasswordHistory
+                PRIMARY KEY CLUSTERED (Id),
+
+            CONSTRAINT FK_UserPasswordHistory_AspNetUsers
+                FOREIGN KEY (UserId)
+                REFERENCES dbo.AspNetUsers (Id)
+                ON DELETE CASCADE
+        );
+    END;
+
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM sys.indexes
+        WHERE object_id = OBJECT_ID(N'dbo.UserPasswordHistory')
+          AND name = N'IX_UserPasswordHistory_UserId_ChangedUtc'
+    )
+    BEGIN
+        CREATE NONCLUSTERED INDEX
+            IX_UserPasswordHistory_UserId_ChangedUtc
+        ON dbo.UserPasswordHistory
+        (
+            UserId,
+            ChangedUtc DESC,
+            Id DESC
+        );
+    END;
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+    THROW;
+END CATCH;
+
+```
+
+Password policy:
+
+- Compare the proposed password against the current hash and the 19 most recent historical hashes.
+- On a successful self-service change, save the old hash before updating the current hash.
+- Retain only 19 historical hashes after a successful change.
+- Do not apply this rule to administrator-initiated resets.
+- Do not apply local password history to AD accounts.
+- Never store plain-text passwords.
+- Password history cannot recover passwords changed before this feature was introduced.
+
+## **5. Script 003 — UserAuditLogs**
+
+Stores user, authentication, provisioning, password and service-account audit events.
+
+```
+
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    IF OBJECT_ID(N'dbo.UserAuditLogs', N'U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.UserAuditLogs
+        (
+            Id BIGINT IDENTITY(1,1) NOT NULL,
+
+            UserId NVARCHAR(450) NULL,
+            ChangedByUserId NVARCHAR(450) NULL,
+            ServiceAccountId NVARCHAR(450) NULL,
+
+            AuthenticationProvider TINYINT NULL,
+
+            Action NVARCHAR(100) NOT NULL,
+            PropertyName NVARCHAR(128) NULL,
+
+            OldValue NVARCHAR(MAX) NULL,
+            NewValue NVARCHAR(MAX) NULL,
+
+            ChangedUtc DATETIME2(7) NOT NULL
+                CONSTRAINT DF_UserAuditLogs_ChangedUtc
+                DEFAULT (SYSUTCDATETIME()),
+
+            CorrelationId NVARCHAR(100) NULL,
+
+            CONSTRAINT PK_UserAuditLogs
+                PRIMARY KEY CLUSTERED (Id)
+        );
+    END;
+
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM sys.indexes
+        WHERE object_id = OBJECT_ID(N'dbo.UserAuditLogs')
+          AND name = N'IX_UserAuditLogs_UserId_ChangedUtc'
+    )
+    BEGIN
+        CREATE NONCLUSTERED INDEX
+            IX_UserAuditLogs_UserId_ChangedUtc
+        ON dbo.UserAuditLogs
+        (
+            UserId,
+            ChangedUtc DESC
+        );
+    END;
+
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM sys.indexes
+        WHERE object_id = OBJECT_ID(N'dbo.UserAuditLogs')
+          AND name = N'IX_UserAuditLogs_ChangedByUserId_ChangedUtc'
+    )
+    BEGIN
+        CREATE NONCLUSTERED INDEX
+            IX_UserAuditLogs_ChangedByUserId_ChangedUtc
+        ON dbo.UserAuditLogs
+        (
+            ChangedByUserId,
+            ChangedUtc DESC
+        );
+    END;
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+    THROW;
+END CATCH;
+
+```
+
+There are intentionally no foreign keys from audit records to users or service accounts. This preserves audit history if an account is subsequently deleted.
+
+Never write passwords, password hashes, authentication tokens or other secrets into audit records.
+
+## **6. Script 004 — UserServiceAccounts**
+
+Maps local application users to existing service accounts.
+
+Supports:
+
+- Global assignments.
+- Page-specific assignments.
+- Default service accounts.
+- Revocation without deleting assignment history.
+- Multiple assignments in the future.
+
+```
+
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    IF OBJECT_ID(N'dbo.AspNetUsers', N'U') IS NULL
+        THROW 50001, 'dbo.AspNetUsers does not exist.', 1;
+
+    IF OBJECT_ID(N'dbo.UserServiceAccounts', N'U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.UserServiceAccounts
+        (
+            Id BIGINT IDENTITY(1,1) NOT NULL,
+
+            UserId NVARCHAR(450) NOT NULL,
+
+            -- Align this with the actual ServiceAccount primary key
+            -- before adding a foreign key to that existing table.
+            ServiceAccountId NVARCHAR(450) NOT NULL,
+
+            PageKey NVARCHAR(128) NULL,
+
+            IsDefault BIT NOT NULL
+                CONSTRAINT DF_UserServiceAccounts_IsDefault
+                DEFAULT (0),
+
+            IsActive BIT NOT NULL
+                CONSTRAINT DF_UserServiceAccounts_IsActive
+                DEFAULT (1),
+
+            CreatedUtc DATETIME2(7) NOT NULL
+                CONSTRAINT DF_UserServiceAccounts_CreatedUtc
+                DEFAULT (SYSUTCDATETIME()),
+
+            RevokedUtc DATETIME2(7) NULL,
+
+            CONSTRAINT PK_UserServiceAccounts
+                PRIMARY KEY CLUSTERED (Id),
+
+            CONSTRAINT FK_UserServiceAccounts_AspNetUsers
+                FOREIGN KEY (UserId)
+                REFERENCES dbo.AspNetUsers (Id)
+                ON DELETE CASCADE
+        );
+    END;
+
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM sys.indexes
+        WHERE object_id = OBJECT_ID(N'dbo.UserServiceAccounts')
+          AND name = N'IX_UserServiceAccounts_UserId_IsActive'
+    )
+    BEGIN
+        CREATE NONCLUSTERED INDEX
+            IX_UserServiceAccounts_UserId_IsActive
+        ON dbo.UserServiceAccounts (UserId, IsActive);
+    END;
+
+    -- Prevent duplicate active global assignments.
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM sys.indexes
+        WHERE object_id = OBJECT_ID(N'dbo.UserServiceAccounts')
+          AND name = N'UX_UserServiceAccounts_Global'
+    )
+    BEGIN
+        CREATE UNIQUE NONCLUSTERED INDEX
+            UX_UserServiceAccounts_Global
+        ON dbo.UserServiceAccounts (UserId, ServiceAccountId)
+        WHERE PageKey IS NULL
+          AND IsActive = 1;
+    END;
+
+    -- Prevent duplicate active page-specific assignments.
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM sys.indexes
+        WHERE object_id = OBJECT_ID(N'dbo.UserServiceAccounts')
+          AND name = N'UX_UserServiceAccounts_Page'
+    )
+    BEGIN
+        CREATE UNIQUE NONCLUSTERED INDEX
+            UX_UserServiceAccounts_Page
+        ON dbo.UserServiceAccounts
+        (
+            UserId,
+            ServiceAccountId,
+            PageKey
+        )
+        WHERE PageKey IS NOT NULL
+          AND IsActive = 1;
+    END;
+
+    -- Only one active global default per user.
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM sys.indexes
+        WHERE object_id = OBJECT_ID(N'dbo.UserServiceAccounts')
+          AND name = N'UX_UserServiceAccounts_GlobalDefault'
+    )
+    BEGIN
+        CREATE UNIQUE NONCLUSTERED INDEX
+            UX_UserServiceAccounts_GlobalDefault
+        ON dbo.UserServiceAccounts (UserId)
+        WHERE PageKey IS NULL
+          AND IsDefault = 1
+          AND IsActive = 1;
+    END;
+
+    -- Only one active default per user and page.
+    IF NOT EXISTS
+    (
+        SELECT 1
+        FROM sys.indexes
+        WHERE object_id = OBJECT_ID(N'dbo.UserServiceAccounts')
+          AND name = N'UX_UserServiceAccounts_PageDefault'
+    )
+    BEGIN
+        CREATE UNIQUE NONCLUSTERED INDEX
+            UX_UserServiceAccounts_PageDefault
+        ON dbo.UserServiceAccounts (UserId, PageKey)
+        WHERE PageKey IS NOT NULL
+          AND IsDefault = 1
+          AND IsActive = 1;
+    END;
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+    THROW;
+END CATCH;
+
+```
+
+**Important deployment checks:**
+
+1. `UserId` must match the existing `AspNetUsers.Id` type and collation.
+2. `ServiceAccountId` must be changed to match the actual existing `ServiceAccount` primary key before deployment.
+3. We will add the service-account foreign key only after confirming the existing schema.
+4. The database permits future multiple assignments. The initial one-active-assignment limit will be enforced in the API using a transaction and concurrency protection.
+5. The API must reject all service-account assignment attempts for AD users.
+
+## **7. Database-first generation**
+
+After running the SQL scripts:
+
+1. Open EF Core Power Tools in Visual Studio.
+2. Select Reverse Engineer.
+3. Select your existing SQL Server database.
+4. Select the existing `AspNetUsers` table and the three new tables.
+5. Select the existing `ServiceAccount` table only if it is already part of your generated model.
+6. Preserve your existing entity and context naming.
+7. Generate the entities and update the existing context.
+
+The new generated entities should correspond to:
+
+```
+UserPasswordHistory
+UserAuditLog
+UserServiceAccount
+```
+
+The exact generated property and navigation names will be determined by the database schema and Power Tools settings.
+
+Do not manually write these POCOs.
+
+## **8. What comes next**
+
+The remaining implementation will be delivered in this dependency order:
+
+| Part | Implementation                                                        |
+| ---- | --------------------------------------------------------------------- |
+| 1    | SQL Server and database-first preparation                             |
+| 2    | Data project: interfaces, services, Identity integration and auditing |
+| 3    | API: local authentication, AD authentication and JIT provisioning     |
+| 4    | API: authorization, controllers and service-account delegation        |
+| 5    | Portal: cookie authentication, login, logout and UI integration       |
+| 6    | Configuration, dependency injection and security settings             |
+| 7    | xUnit v3 tests using Microsoft Testing Platform and Shouldly          |
+
+The next part will address an important integration issue: your generated `AspNetUser` is a database-first POCO, so we need to integrate it with ASP.NET Core Identity without assuming it inherits from `IdentityUser` or changing the generated class.
+
+**Part 1 is the database foundation.** Once the generated model is available in your project, the remaining code can be written against its actual database-first structure without requiring you to disclose those files.
+
+====================================================================
+
+# **Part 2 — Data project**
+
+This part implements the data-access layer for the authentication and authorization design.
+
+It builds on the SQL tables from Part 1 and your existing database-first EF Core model.
+
+**Important design decision:** We will not make your generated `AspNetUser` inherit from `IdentityUser`. Instead, we will keep the generated entity as it is and use an application-owned Identity integration. This avoids modifying generated code and avoids assuming the structure of your existing `ExistingDatabaseContext`.
+
+## **1. Data project structure**
+
+Add the following application-owned folders and files:
+
+```
+MyApplication.Data/
+│
+├── Contexts/
+│   └── ExistingDatabaseContext.cs       (generated)
+│
+├── Entities/
+│   ├── AspNetUser.cs                     (generated)
+│   ├── ServiceAccount.cs                 (generated)
+│   ├── UserPasswordHistory.cs             (generated)
+│   ├── UserAuditLog.cs                    (generated)
+│   └── UserServiceAccount.cs              (generated)
+│
+├── Interfaces/
+│   ├── IApplicationUserStore.cs
+│   ├── IUserPasswordHistoryRepository.cs
+│   ├── IUserAuditRepository.cs
+│   └── IUserServiceAccountRepository.cs
+│
+├── Models/
+│   ├── ApplicationUserRecord.cs
+│   ├── UserPasswordHistoryRecord.cs
+│   ├── UserAuditRecord.cs
+│   └── UserServiceAccountRecord.cs
+│
+├── Repositories/
+│   ├── ApplicationUserRepository.cs
+│   ├── UserPasswordHistoryRepository.cs
+│   ├── UserAuditRepository.cs
+│   └── UserServiceAccountRepository.cs
+│
+└── Infrastructure/
+    └── IocStartup.cs
+```
+
+The generated files remain generated. All new application-owned code is kept separate.
+
+## **2. NuGet packages**
+
+Install the following packages into `MyApplication.Data`:
+
+```
+<ItemGroup>
+  <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.0" />
+  <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.0" />
+  <PackageReference Include="Microsoft.AspNetCore.Identity" Version="2.3.1" />
+</ItemGroup>
+```
+
+Use versions aligned with your actual .NET 10 and EF Core installation. In particular, don't downgrade EF Core packages generated by your existing project.
+
+The Identity package is used for Identity interfaces and password hashing contracts. We are not using its standard EF `UserStore` against your arbitrary database-first context.
+
+## **3. Application user record**
+
+Create `Models/ApplicationUserRecord.cs`.
+
+This is an application-owned data-transfer model. It is not an EF entity.
+
+```
+
+namespace MyApplication.Data.Models;
+
+/// <summary>
+/// Represents the application user information required by authentication
+/// and authorization services.
+/// </summary>
+public sealed class ApplicationUserRecord
 {
-    Card.OpenInNewTab = !canDisplay;
+    /// <summary>
+    /// Gets or sets the application user identifier.
+    /// </summary>
+    public required string Id { get; set; }
+
+    /// <summary>
+    /// Gets or sets the username.
+    /// </summary>
+    public string? UserName { get; set; }
+
+    /// <summary>
+    /// Gets or sets the normalized username.
+    /// </summary>
+    public string? NormalizedUserName { get; set; }
+
+    /// <summary>
+    /// Gets or sets the email address.
+    /// </summary>
+    public string? Email { get; set; }
+
+    /// <summary>
+    /// Gets or sets the normalized email address.
+    /// </summary>
+    public string? NormalizedEmail { get; set; }
+
+    /// <summary>
+    /// Gets or sets the password hash.
+    /// </summary>
+    public string? PasswordHash { get; set; }
+
+    /// <summary>
+    /// Gets or sets the security stamp.
+    /// </summary>
+    public string? SecurityStamp { get; set; }
+
+    /// <summary>
+    /// Gets or sets the concurrency stamp.
+    /// </summary>
+    public string? ConcurrencyStamp { get; set; }
+
+    /// <summary>
+    /// Gets or sets the authentication provider.
+    /// Zero represents local authentication and one represents Active Directory.
+    /// </summary>
+    public byte AuthenticationProvider { get; set; }
+
+    /// <summary>
+    /// Gets or sets the Active Directory object identifier.
+    /// </summary>
+    public string? ActiveDirectoryObjectId { get; set; }
+
+    /// <summary>
+    /// Gets or sets the display name.
+    /// </summary>
+    public string? DisplayName { get; set; }
+
+    /// <summary>
+    /// Gets or sets the department.
+    /// </summary>
+    public string? Department { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether the application account is active.
+    /// </summary>
+    public bool IsActive { get; set; }
 }
-```
-
-## **2. IframePreview\.razor**
-
-The important part is to default to failure and only change the result when the iframe fires its load event.
 
 ```
-@implements IAsyncDisposable
 
-<div class="iframe-preview">
+This record deliberately contains only the fields required by this design. Additional existing Identity properties can be added to the adapter when required.
 
-    @if (IsTesting)
-    {
-        <p>Testing website preview...</p>
-    }
-    else if (CanDisplay)
-    {
-        <p>Preview loaded.</p>
-    }
-    else
-    {
-        <p>Website cannot be previewed.</p>
-    }
+## **4. Authentication provider constants**
 
-    @if (IsValidUrl)
-    {
-        <iframe @key="Url"
-                src="@Url"
-                title="Website preview"
-                class="iframe-preview-frame"
-                @onload="HandleLoadAsync">
-        </iframe>
-    }
-
-</div>
-
-@code {
-    [Parameter, EditorRequired]
-    public string Url { get; set; } = string.Empty;
-
-    [Parameter]
-    public EventCallback<bool> OnTestCompleted { get; set; }
-
-    private bool IsTesting { get; set; }
-
-    private bool CanDisplay { get; set; }
-
-    private bool IsValidUrl { get; set; }
-
-    private bool TestCompleted { get; set; }
-
-    private CancellationTokenSource? TimeoutSource;
-
-    protected override async Task OnParametersSetAsync()
-    {
-        TimeoutSource?.Cancel();
-        TimeoutSource?.Dispose();
-
-        TestCompleted = false;
-        CanDisplay = false;
-        IsTesting = false;
-
-        IsValidUrl =
-            Uri.TryCreate(Url, UriKind.Absolute, out var uri) &&
-            (uri.Scheme == Uri.UriSchemeHttps ||
-             uri.Scheme == Uri.UriSchemeHttp);
-
-        if (!IsValidUrl)
-        {
-            TestCompleted = true;
-            await OnTestCompleted.InvokeAsync(false);
-            return;
-        }
-
-        IsTesting = true;
-
-        TimeoutSource = new CancellationTokenSource();
-
-        _ = MonitorTimeoutAsync(TimeoutSource.Token);
-    }
-
-    private async Task MonitorTimeoutAsync(
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            await Task.Delay(
-                TimeSpan.FromSeconds(10),
-                cancellationToken);
-
-            await InvokeAsync(async () =>
-            {
-                if (!TestCompleted)
-                {
-                    await CompleteTestAsync(false);
-                }
-            });
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected when the test completes.
-        }
-    }
-
-    private async Task HandleLoadAsync()
-    {
-        if (!TestCompleted)
-        {
-            await CompleteTestAsync(true);
-        }
-    }
-
-    private async Task CompleteTestAsync(bool canDisplay)
-    {
-        if (TestCompleted)
-        {
-            return;
-        }
-
-        TestCompleted = true;
-        IsTesting = false;
-        CanDisplay = canDisplay;
-
-        TimeoutSource?.Cancel();
-
-        await OnTestCompleted.InvokeAsync(canDisplay);
-    }
-
-    public ValueTask DisposeAsync()
-    {
-        TimeoutSource?.Cancel();
-        TimeoutSource?.Dispose();
-
-        return ValueTask.CompletedTask;
-    }
-}
-```
-
-## **3. Admin page**
+Create `Models/AuthenticationProvider.cs`.
 
 ```
-<IframePreview @key="Card.Url"
-               Url="@Card.Url"
-               OnTestCompleted="HandlePreviewTestCompleted" />
-```
 
-```
-private void HandlePreviewTestCompleted(bool canDisplay)
+namespace MyApplication.Data.Models;
+
+/// <summary>
+/// Defines the authentication providers supported by the application.
+/// </summary>
+public enum AuthenticationProvider : byte
 {
-    Card.OpenInNewTab = !canDisplay;
-}
-```
+    /// <summary>
+    /// Authentication using the application's local password.
+    /// </summary>
+    Local = 0,
 
-**Important:** This implementation handles invalid URLs and timeouts correctly, but a website that blocks iframe embedding can still trigger `onload`. There is no universally reliable browser-only way to distinguish that case for arbitrary external websites.
-
-For your admin workflow, I'd treat this as a best-effort preview check and let the administrator manually override `OpenInNewTab` if necessary.
-=========================================================================================
-=========================================================================================
-=========================================================================================
-
-#Navigation control
-
-1. NavigableFluentCard.razor – your reusable Fluent UI card, accepting your existing model.
-2. WebsiteViewer.razor – a reusable website viewer that displays an external website in an iframe, with close and refresh controls.
-
-The implementation targets .NET 10, C# 14 and Fluent UI Blazor v5.
-
-It does not introduce another model or DTO. You only need to substitute `YourExistingCardModel` and its property names with those from your application.
-
-## 1. Component architecture
-
-Your existing card model
-
-URL · Title · OpenInNewTab · Other properties
-
-NavigableFluentCard.razor
-
-Generic reusable FluentCard component
-
-New tab
-
-Native anchor navigation
-
-Embedded
-
-WebsiteViewer component
-
-An improvement here: I'm making the custom card component generic (`TCard`). This means you can pass your existing model without having to tell the component what your model class is called or create another DTO.
-
-The component receives selectors for the URL, title and navigation preference.
-
-## 2. NavigableFluentCard.razor
-
-```
-
-@typeparam TCard
-
-@using Microsoft.AspNetCore.Components.Web
-@using Microsoft.FluentUI.AspNetCore.Components
-
-<div class="navigable-card-container">
-
-    @if (ShouldOpenInNewTab)
-    {
-        <a href="@CardUrl"
-           target="_blank"
-           rel="noopener noreferrer"
-           class="navigable-card-link">
-
-            <FluentCard Width="@CardWidth"
-                        Height="@CardHeight">
-                @ChildContent(Card)
-            </FluentCard>
-
-        </a>
-    }
-    else
-    {
-        <FluentCard Width="@CardWidth"
-                    Height="@CardHeight"
-                    OnClick="HandleCardClickAsync">
-
-            @ChildContent(Card)
-
-        </FluentCard>
-    }
-
-    @if (!ShouldOpenInNewTab && IsViewerVisible)
-    {
-        <WebsiteViewer @key="CardUrl"
-                       Url="@CardUrl"
-                       Title="@CardTitle"
-                       OnClose="CloseViewerAsync" />
-    }
-
-</div>
-
-@code {
-    [Parameter, EditorRequired]
-    public TCard Card { get; set; } = default!;
-
-    [Parameter, EditorRequired]
-    public Func<TCard, string> UrlSelector { get; set; } = default!;
-
-    [Parameter, EditorRequired]
-    public Func<TCard, string> TitleSelector { get; set; } = default!;
-
-    [Parameter, EditorRequired]
-    public Func<TCard, bool> OpenInNewTabSelector { get; set; } = default!;
-
-    [Parameter, EditorRequired]
-    public RenderFragment<TCard> ChildContent { get; set; } = default!;
-
-    [Parameter]
-    public string? CardWidth { get; set; }
-
-    [Parameter]
-    public string? CardHeight { get; set; }
-
-    private bool IsViewerVisible { get; set; }
-
-    private string CardUrl => UrlSelector(Card);
-
-    private string CardTitle => TitleSelector(Card);
-
-    private bool ShouldOpenInNewTab =>
-        OpenInNewTabSelector(Card);
-
-    protected override void OnParametersSet()
-    {
-        ArgumentNullException.ThrowIfNull(Card);
-        ArgumentNullException.ThrowIfNull(UrlSelector);
-        ArgumentNullException.ThrowIfNull(TitleSelector);
-        ArgumentNullException.ThrowIfNull(OpenInNewTabSelector);
-        ArgumentNullException.ThrowIfNull(ChildContent);
-
-        if (!Uri.TryCreate(CardUrl, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttp &&
-             uri.Scheme != Uri.UriSchemeHttps))
-        {
-            throw new InvalidOperationException(
-                "The card URL must be an absolute HTTP or HTTPS URL.");
-        }
-
-        if (string.IsNullOrWhiteSpace(CardTitle))
-        {
-            throw new InvalidOperationException(
-                "The card title cannot be empty.");
-        }
-
-        if (ShouldOpenInNewTab)
-        {
-            IsViewerVisible = false;
-        }
-    }
-
-    private Task HandleCardClickAsync(MouseEventArgs args)
-    {
-        IsViewerVisible = true;
-        return Task.CompletedTask;
-    }
-
-    private Task CloseViewerAsync()
-    {
-        IsViewerVisible = false;
-        return Task.CompletedTask;
-    }
+    /// <summary>
+    /// Authentication using Active Directory.
+    /// </summary>
+    ActiveDirectory = 1
 }
 
 ```
 
-## 3. WebsiteViewer.razor
+Use this enum in application logic rather than scattering numeric values throughout the code.
 
-This is the actual embedded website viewer.
+## **5. Repository interfaces**
 
-It includes:
-
-- A header showing the website title.
-- A refresh button.
-- An open-in-new-tab button.
-- A close button.
-- A full-width iframe.
-- A responsive layout.
+Create `Interfaces/IApplicationUserStore.cs`.
 
 ```
 
-@using Microsoft.FluentUI.AspNetCore.Components
+using MyApplication.Data.Models;
 
-<div class="website-viewer">
+namespace MyApplication.Data.Interfaces;
 
-    <div class="website-viewer-header">
-
-        <div class="website-viewer-title">
-            <FluentLabel Typo="Typography.PaneHeader">
-                @Title
-            </FluentLabel>
-
-            <span class="website-viewer-address">
-                @Url
-            </span>
-        </div>
-
-        <div class="website-viewer-actions">
-
-            <FluentButton Appearance="Appearance.Stealth"
-                          Title="Refresh website"
-                          OnClick="RefreshAsync">
-                <FluentIcon Value="@(new Icons.Regular.Size20.ArrowClockwise())" />
-            </FluentButton>
-
-            <a href="@Url"
-               target="_blank"
-               rel="noopener noreferrer"
-               class="website-viewer-external-link"
-               title="Open in new tab">
-                <FluentIcon Value="@(new Icons.Regular.Size20.Open())" />
-            </a>
-
-            <FluentButton Appearance="Appearance.Stealth"
-                          Title="Close viewer"
-                          OnClick="CloseAsync">
-                <FluentIcon Value="@(new Icons.Regular.Size20.Dismiss())" />
-            </FluentButton>
-
-        </div>
-
-    </div>
-
-    <div class="website-viewer-content">
-
-        <iframe @key="RefreshVersion"
-                src="@Url"
-                title="@Title"
-                class="website-viewer-iframe"
-                loading="eager"
-                referrerpolicy="strict-origin-when-cross-origin">
-        </iframe>
-
-    </div>
-
-</div>
-
-@code {
-    [Parameter, EditorRequired]
-    public string Url { get; set; } = string.Empty;
-
-    [Parameter, EditorRequired]
-    public string Title { get; set; } = string.Empty;
-
-    [Parameter]
-    public EventCallback OnClose { get; set; }
-
-    private int RefreshVersion { get; set; }
-
-    protected override void OnParametersSet()
-    {
-        if (!Uri.TryCreate(Url, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttp &&
-             uri.Scheme != Uri.UriSchemeHttps))
-        {
-            throw new InvalidOperationException(
-                "The viewer URL must be an absolute HTTP or HTTPS URL.");
-        }
-
-        if (string.IsNullOrWhiteSpace(Title))
-        {
-            throw new InvalidOperationException(
-                "The viewer title cannot be empty.");
-        }
-    }
-
-    private Task RefreshAsync()
-    {
-        RefreshVersion++;
-        return Task.CompletedTask;
-    }
-
-    private Task CloseAsync()
-    {
-        return OnClose.InvokeAsync();
-    }
-}
-
-```
-
-## 4. NavigableFluentCard.razor.css
-
-```
-
-.navigable-card-container {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    width: 100%;
-}
-
-.navigable-card-link {
-    display: block;
-    color: inherit;
-    text-decoration: none;
-}
-
-.navigable-card-link fluent-card {
-    cursor: pointer;
-}
-
-.website-viewer {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    min-height: 650px;
-    overflow: hidden;
-    border: 1px solid var(--neutral-stroke-divider-rest);
-    border-radius: 8px;
-    background: var(--neutral-layer-1);
-}
-
-.website-viewer-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--neutral-stroke-divider-rest);
-}
-
-.website-viewer-title {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    gap: 4px;
-}
-
-.website-viewer-address {
-    overflow: hidden;
-    color: var(--neutral-foreground-hint);
-    font-size: 12px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.website-viewer-actions {
-    display: flex;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 8px;
-}
-
-.website-viewer-actions button,
-.website-viewer-external-link {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 36px;
-    padding: 6px 10px;
-    border: 1px solid var(--neutral-stroke-divider-rest);
-    border-radius: 6px;
-    background: var(--neutral-layer-2);
-    color: var(--neutral-foreground-rest);
-    font: inherit;
-    font-size: 13px;
-    text-decoration: none;
-    cursor: pointer;
-}
-
-.website-viewer-actions button:hover,
-.website-viewer-external-link:hover {
-    background: var(--neutral-layer-3);
-}
-
-.website-viewer-content {
-    flex: 1;
-    min-height: 600px;
-}
-
-.website-viewer-iframe {
-    display: block;
-    width: 100%;
-    height: 600px;
-    border: 0;
-    background: white;
-}
-
-@media (max-width: 600px) {
-    .website-viewer-header {
-        align-items: flex-start;
-        flex-direction: column;
-    }
-
-    .website-viewer-actions {
-        width: 100%;
-        justify-content: flex-end;
-    }
-}
-
-```
-
-## 5. WebsiteViewer.razor — small adjustment
-
-To keep the viewer independent of Fluent UI icon APIs, use ordinary HTML buttons. Replace the `website-viewer-actions` section in the previous component with:
-
-```
-
-<div class="website-viewer-actions">
-
-    <button type="button"
-            title="Refresh website"
-            @onclick="RefreshAsync">
-        Refresh
-    </button>
-
-    <a href="@Url"
-       target="_blank"
-       rel="noopener noreferrer"
-       class="website-viewer-external-link">
-        Open in new tab
-    </a>
-
-    <button type="button"
-            title="Close viewer"
-            @onclick="CloseAsync">
-        Close
-    </button>
-
-</div>
-
-```
-
-This avoids any dependency on specific Fluent UI icon names or button appearance enums.
-
-## 6. How to use it with your existing model
-
-For this example, imagine your existing model has the following properties:
-
-- `Url`
-- `Title`
-- `Description`
-- `OpenInNewTab`
-
-You don't need to change your model.
-
-Example parent component:
-
-```
-
-@using Microsoft.FluentUI.AspNetCore.Components
-
-@foreach (var item in Cards)
+/// <summary>
+/// Defines application user data operations.
+/// </summary>
+public interface IApplicationUserStore
 {
-    <NavigableFluentCard TCard="YourExistingCardModel"
-                         Card="@item"
-                         UrlSelector="@(card => card.Url)"
-                         TitleSelector="@(card => card.Title)"
-                         OpenInNewTabSelector="@(card => card.OpenInNewTab)"
-                         CardWidth="100%"
-                         CardHeight="150px">
+    /// <summary>
+    /// Finds an application user by username.
+    /// </summary>
+    Task<ApplicationUserRecord?> FindByUserNameAsync(
+        string normalizedUserName,
+        CancellationToken cancellationToken = default);
 
-        <ChildContent Context="card">
+    /// <summary>
+    /// Finds an application user by identifier.
+    /// </summary>
+    Task<ApplicationUserRecord?> FindByIdAsync(
+        string userId,
+        CancellationToken cancellationToken = default);
 
-            <FluentStack Padding="16">
-                <FluentLabel Typo="Typography.PaneHeader">
-                    @card.Title
-                </FluentLabel>
+    /// <summary>
+    /// Finds an Active Directory user by object identifier.
+    /// </summary>
+    Task<ApplicationUserRecord?> FindByActiveDirectoryObjectIdAsync(
+        string objectId,
+        CancellationToken cancellationToken = default);
 
-                <FluentLabel>
-                    @card.Description
-                </FluentLabel>
-            </FluentStack>
+    /// <summary>
+    /// Creates an application user.
+    /// </summary>
+    Task CreateAsync(
+        ApplicationUserRecord user,
+        CancellationToken cancellationToken = default);
 
-        </ChildContent>
+    /// <summary>
+    /// Updates an application user.
+    /// </summary>
+    Task UpdateAsync(
+        ApplicationUserRecord user,
+        CancellationToken cancellationToken = default);
 
-    </NavigableFluentCard>
+    /// <summary>
+    /// Updates a user's password hash and security stamp.
+    /// </summary>
+    Task UpdatePasswordAsync(
+        string userId,
+        string passwordHash,
+        string securityStamp,
+        string concurrencyStamp,
+        CancellationToken cancellationToken = default);
 }
 
 ```
 
-Replace `YourExistingCardModel` with your actual class name and adjust the selectors if your property names differ.
-
-## 7. Final WebsiteViewer.razor
-
-For clarity, this is the complete corrected version to save as the actual file (use this instead of the earlier draft in section 3).
+Create `Interfaces/IUserPasswordHistoryRepository.cs`.
 
 ```
 
-@using Microsoft.AspNetCore.Components
+using MyApplication.Data.Models;
 
-<div class="website-viewer">
+namespace MyApplication.Data.Interfaces;
 
-    <div class="website-viewer-header">
+/// <summary>
+/// Defines password history operations.
+/// </summary>
+public interface IUserPasswordHistoryRepository
+{
+    /// <summary>
+    /// Gets the most recent password hashes for a user.
+    /// </summary>
+    Task<IReadOnlyList<UserPasswordHistoryRecord>> GetRecentAsync(
+        string userId,
+        int count,
+        CancellationToken cancellationToken = default);
 
-        <div class="website-viewer-title">
-            <strong>@Title</strong>
-            <span class="website-viewer-address">@Url</span>
-        </div>
+    /// <summary>
+    /// Adds a previous password hash.
+    /// </summary>
+    Task AddAsync(
+        string userId,
+        string passwordHash,
+        CancellationToken cancellationToken = default);
 
-        <div class="website-viewer-actions">
+    /// <summary>
+    /// Removes password history records beyond the retention limit.
+    /// </summary>
+    Task RetainLatestAsync(
+        string userId,
+        int count,
+        CancellationToken cancellationToken = default);
+}
 
-            <button type="button"
-                    title="Refresh website"
-                    @onclick="RefreshAsync">
-                Refresh
-            </button>
+```
 
-            <a href="@Url"
-               target="_blank"
-               rel="noopener noreferrer"
-               class="website-viewer-external-link">
-                Open in new tab
-            </a>
+Create `Interfaces/IUserAuditRepository.cs`.
 
-            <button type="button"
-                    title="Close viewer"
-                    @onclick="CloseAsync">
-                Close
-            </button>
+```
 
-        </div>
+using MyApplication.Data.Models;
 
-    </div>
+namespace MyApplication.Data.Interfaces;
 
-    <div class="website-viewer-content">
+/// <summary>
+/// Defines user audit operations.
+/// </summary>
+public interface IUserAuditRepository
+{
+    /// <summary>
+    /// Writes an audit record.
+    /// </summary>
+    Task AddAsync(
+        UserAuditRecord record,
+        CancellationToken cancellationToken = default);
+}
 
-        <iframe @key="RefreshVersion"
-                src="@Url"
-                title="@Title"
-                class="website-viewer-iframe"
-                loading="eager"
-                referrerpolicy="strict-origin-when-cross-origin">
-        </iframe>
+```
 
-    </div>
+Create `Interfaces/IUserServiceAccountRepository.cs`.
 
-</div>
+```
 
-@code {
-    [Parameter, EditorRequired]
-    public string Url { get; set; } = string.Empty;
+using MyApplication.Data.Models;
 
-    [Parameter, EditorRequired]
-    public string Title { get; set; } = string.Empty;
+namespace MyApplication.Data.Interfaces;
 
-    [Parameter]
-    public EventCallback OnClose { get; set; }
+/// <summary>
+/// Defines user service-account assignment operations.
+/// </summary>
+public interface IUserServiceAccountRepository
+{
+    /// <summary>
+    /// Gets active service-account assignments for a user and page.
+    /// </summary>
+    Task<IReadOnlyList<UserServiceAccountRecord>> GetActiveAssignmentsAsync(
+        string userId,
+        string? pageKey,
+        CancellationToken cancellationToken = default);
 
-    private int RefreshVersion { get; set; }
+    /// <summary>
+    /// Checks whether a service-account assignment is active for a user
+    /// and the requested page.
+    /// </summary>
+    Task<bool> HasActiveAssignmentAsync(
+        string userId,
+        string serviceAccountId,
+        string? pageKey,
+        CancellationToken cancellationToken = default);
+}
 
-    protected override void OnParametersSet()
+```
+
+## **6. Correct the NuGet package references**
+
+One correction to the package list in the previous section: use the .NET 10 Identity Core package rather than the older `Microsoft.AspNetCore.Identity` 2.3.1 package.
+
+For `MyApplication.Data.csproj`:
+
+```
+<ItemGroup>
+  <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.0" />
+  <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.0" />
+  <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="10.0.0" />
+</ItemGroup>
+```
+
+Keep these versions aligned with the versions used by your solution.
+
+## **7. Additional data models**
+
+Create `Models/UserPasswordHistoryRecord.cs`.
+
+```
+
+namespace MyApplication.Data.Models;
+
+/// <summary>
+/// Represents a previously used password hash.
+/// </summary>
+public sealed class UserPasswordHistoryRecord
+{
+    /// <summary>
+    /// Gets or sets the password history identifier.
+    /// </summary>
+    public long Id { get; set; }
+
+    /// <summary>
+    /// Gets or sets the password hash.
+    /// </summary>
+    public required string PasswordHash { get; set; }
+
+    /// <summary>
+    /// Gets or sets the date and time the password was changed.
+    /// </summary>
+    public DateTime ChangedUtc { get; set; }
+}
+
+```
+
+Create `Models/UserAuditRecord.cs`.
+
+```
+
+namespace MyApplication.Data.Models;
+
+/// <summary>
+/// Represents an application audit event.
+/// </summary>
+public sealed class UserAuditRecord
+{
+    /// <summary>
+    /// Gets or sets the affected user identifier.
+    /// </summary>
+    public string? UserId { get; set; }
+
+    /// <summary>
+    /// Gets or sets the user who performed the action.
+    /// </summary>
+    public string? ChangedByUserId { get; set; }
+
+    /// <summary>
+    /// Gets or sets the service account identifier.
+    /// </summary>
+    public string? ServiceAccountId { get; set; }
+
+    /// <summary>
+    /// Gets or sets the authentication provider.
+    /// </summary>
+    public byte? AuthenticationProvider { get; set; }
+
+    /// <summary>
+    /// Gets or sets the audit action.
+    /// </summary>
+    public required string Action { get; set; }
+
+    /// <summary>
+    /// Gets or sets the affected property name.
+    /// </summary>
+    public string? PropertyName { get; set; }
+
+    /// <summary>
+    /// Gets or sets the previous value.
+    /// </summary>
+    public string? OldValue { get; set; }
+
+    /// <summary>
+    /// Gets or sets the new value.
+    /// </summary>
+    public string? NewValue { get; set; }
+
+    /// <summary>
+    /// Gets or sets the UTC timestamp.
+    /// </summary>
+    public DateTime ChangedUtc { get; set; }
+
+    /// <summary>
+    /// Gets or sets the correlation identifier.
+    /// </summary>
+    public string? CorrelationId { get; set; }
+}
+
+```
+
+Create `Models/UserServiceAccountRecord.cs`.
+
+```
+
+namespace MyApplication.Data.Models;
+
+/// <summary>
+/// Represents a user's service-account assignment.
+/// </summary>
+public sealed class UserServiceAccountRecord
+{
+    /// <summary>
+    /// Gets or sets the assignment identifier.
+    /// </summary>
+    public long Id { get; set; }
+
+    /// <summary>
+    /// Gets or sets the application user identifier.
+    /// </summary>
+    public required string UserId { get; set; }
+
+    /// <summary>
+    /// Gets or sets the service-account identifier.
+    /// </summary>
+    public required string ServiceAccountId { get; set; }
+
+    /// <summary>
+    /// Gets or sets the optional page key.
+    /// </summary>
+    public string? PageKey { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether this is the default assignment.
+    /// </summary>
+    public bool IsDefault { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether the assignment is active.
+    /// </summary>
+    public bool IsActive { get; set; }
+
+    /// <summary>
+    /// Gets or sets when the assignment was created.
+    /// </summary>
+    public DateTime CreatedUtc { get; set; }
+
+    /// <summary>
+    /// Gets or sets when the assignment was revoked.
+    /// </summary>
+    public DateTime? RevokedUtc { get; set; }
+}
+
+```
+
+## **8. Make password changes atomic**
+
+There is an important issue with the original password-history interface: adding a history record and changing `AspNetUsers.PasswordHash` as separate operations could leave inconsistent data if one operation succeeds and the other fails.
+
+Replace `Interfaces/IUserPasswordHistoryRepository.cs` with this version.
+
+```
+
+using MyApplication.Data.Models;
+
+namespace MyApplication.Data.Interfaces;
+
+/// <summary>
+/// Defines password history and atomic password change operations.
+/// </summary>
+public interface IUserPasswordHistoryRepository
+{
+    /// <summary>
+    /// Gets the most recent password history records for a user.
+    /// </summary>
+    Task<IReadOnlyList<UserPasswordHistoryRecord>> GetRecentAsync(
+        string userId,
+        int count,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Atomically stores the previous password hash, updates the current
+    /// password hash and retains the configured number of history records.
+    /// </summary>
+    Task ChangePasswordAsync(
+        string userId,
+        string expectedConcurrencyStamp,
+        string newPasswordHash,
+        string newSecurityStamp,
+        string newConcurrencyStamp,
+        int historyCount,
+        CancellationToken cancellationToken = default);
+}
+
+```
+
+The implementation must use one SQL transaction with appropriate concurrency protection. It should:
+
+1. Lock and retrieve the current user password and concurrency stamp.
+2. Verify the expected concurrency stamp.
+3. Insert the existing password hash into `UserPasswordHistory`.
+4. Update `AspNetUsers.PasswordHash`, `SecurityStamp` and `ConcurrencyStamp`.
+5. Retain only the configured number of historical hashes.
+6. Commit the transaction.
+
+The service that calls this method must perform the password-history comparison using `IPasswordHasher<TUser>` before invoking the change operation.
+
+This prevents two concurrent password changes from silently overwriting one another.
+
+## **9. Identity integration boundary**
+
+The application needs to use ASP.NET Core's password hasher without forcing your generated entity to inherit from `IdentityUser`.
+
+The Identity interfaces and password hasher will be used by application services. The generated entity remains a normal EF Core entity.
+
+For example, the password hasher is registered using the Identity Core package:
+
+```
+services.AddScoped<IPasswordHasher<ApplicationUserRecord>,
+    PasswordHasher<ApplicationUserRecord>>();
+```
+
+The authentication service will call:
+
+```
+var verificationResult = passwordHasher.VerifyHashedPassword(
+    user,
+    user.PasswordHash!,
+    proposedPassword);
+```
+
+The result must be checked against both:
+
+- The current password hash.
+- The most recent 19 historical hashes.
+
+Never compare newly generated hashes directly to determine whether two passwords are the same. Password hashing algorithms use salts, so equivalent passwords can produce different hash strings.
+
+## **10. Repository implementation strategy**
+
+Because your `ExistingDatabaseContext` and generated `AspNetUser` property definitions are not available to this implementation, I am deliberately separating the repository contracts from the generated EF model.
+
+For this application, the repositories can use the existing `DbContext.Database.GetDbConnection()` API and parameterised SQL commands against the known database tables.
+
+This has three advantages:
+
+- It does not require assumptions about generated `DbSet` property names.
+- It does not require modifying generated POCOs.
+- It allows the repositories to use the existing database context.
+
+The implementations will use the existing `DbContext` instance supplied by dependency injection.
+
+There is one limitation: the service-account repository can validate assignment records, but the check that the underlying service account is active must use your actual generated `ServiceAccount` model and its real active-status property. That integration belongs in the next API/service layer.
+
+## **11. Dependency injection**
+
+Create `Infrastructure/IocStartup.cs`.
+
+This registers the repository contracts while allowing your existing application to register its generated context normally.
+
+```
+
+using Microsoft.Extensions.DependencyInjection;
+using MyApplication.Data.Interfaces;
+using MyApplication.Data.Repositories;
+
+namespace MyApplication.Data.Infrastructure;
+
+/// <summary>
+/// Provides dependency injection registration for the Data project.
+/// </summary>
+public static class IocStartup
+{
+    /// <summary>
+    /// Registers application data services.
+    /// The application's existing database context must already be registered.
+    /// </summary>
+    public static IServiceCollection AddApplicationData(
+        this IServiceCollection services)
     {
-        if (!Uri.TryCreate(Url, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttps &&
-             uri.Scheme != Uri.UriSchemeHttp))
-        {
-            throw new InvalidOperationException(
-                "The viewer URL must be an absolute HTTP or HTTPS URL.");
-        }
+        services.AddScoped<IApplicationUserStore,
+            ApplicationUserRepository>();
 
-        if (string.IsNullOrWhiteSpace(Title))
-        {
-            throw new InvalidOperationException(
-                "The viewer title cannot be empty.");
-        }
-    }
+        services.AddScoped<IUserPasswordHistoryRepository,
+            UserPasswordHistoryRepository>();
 
-    private Task RefreshAsync()
-    {
-        RefreshVersion++;
-        return Task.CompletedTask;
-    }
+        services.AddScoped<IUserAuditRepository,
+            UserAuditRepository>();
 
-    private Task CloseAsync()
-    {
-        return OnClose.InvokeAsync();
+        services.AddScoped<IUserServiceAccountRepository,
+            UserServiceAccountRepository>();
+
+        return services;
     }
 }
 
 ```
 
-## 8. Project requirements
-
-Ensure your project already references:
+Call it from the API's `Program.cs` after registering the existing database context:
 
 ```
-<PackageReference Include="Microsoft.FluentUI.AspNetCore.Components"
-                  Version="5.*" />
+builder.Services.AddApplicationData();
 ```
 
-And that Fluent UI is registered in `Program.cs`:
+The repository implementations should receive the existing context through `DbContext` injection. If necessary, register the existing context as its base type:
 
 ```
-builder.Services.AddFluentUIComponents();
+builder.Services.AddScoped<DbContext>(serviceProvider =>
+    serviceProvider.GetRequiredService<ExistingDatabaseContext>());
 ```
 
-The application must also have an interactive Blazor render mode for card click events to work.&#x20;
+Use the actual namespace of your generated context in this registration.
 
-[image](https://www.google.com/s2/favicons?domain=https://github.com\&sz=32)
+## **12. Part 2 completion checklist**
 
-GitHub+1
+Implementation checklist
 
+- Install the correct .NET 10 package references.
+- Generate the three new EF Core entities using Power Tools.
+- Add the application-owned record models.
+- Add the repository interfaces.
+- Implement atomic password-history updates.
+- Implement the user repository against the actual `AspNetUsers` schema.
+- Implement the audit repository.
+- Implement service-account assignment queries.
+- Register the repositories in dependency injection.
+- Confirm the generated context is registered only once.
 
+**A note about completeness:** The interfaces and models above establish the Data project's contracts, but they are not yet a complete compilable repository implementation. I have not invented the generated context's namespace or the existing entity's property names. The concrete repository classes must be added against the database contract; the service-account active-status check also needs the actual existing table definition.
 
-## 9. Final file structure
-
-```
-Components/
-    Cards/
-        NavigableFluentCard.razor
-        NavigableFluentCard.razor.css
-
-    Viewers/
-        WebsiteViewer.razor
-```
-
-Implementation summary
-
-- Existing model retained.
-- No additional DTOs.
-- Generic card component.
-- New-tab navigation supported.
-- Embedded website viewer supported.
-- Refresh and close controls.
-- HTTP/HTTPS URL validation.
-- Responsive layout.
-- No JavaScript required.
-
-One final technical caveat: Google and other websites may refuse iframe embedding. The implementation cannot override those restrictions.
-
-For your work machine, the three files to copy are `NavigableFluentCard.razor`, `WebsiteViewer.razor` and `NavigableFluentCard.razor.css`.
+================================================================================================================================================================
+## **Next: Part 3 — API authentication**
+================================================================================================================================================================
