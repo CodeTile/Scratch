@@ -1221,6 +1221,627 @@ builder.Services.AddScoped<DbContext>(serviceProvider =>
 
 Use the actual namespace of your generated context in this registration.
 
+
+
+Perfect. I'll use:
+
+- Context: `FooBarDbContext`
+- User entity: `AspNetUser`
+- User DbSet: `AspNetUsers`
+
+I'll switch the repositories to EF Core LINQ and entity operations. The generated database-first files remain untouched.
+
+One important distinction: EF Core's normal LINQ and transaction APIs are sufficient for most of these repositories. For password changes, I'll use a transaction and concurrency-stamp check; a database-specific row lock may still be necessary to make the check-and-update safe under simultaneous requests. I won't silently claim ordinary transaction isolation guarantees that protection.
+
+Now that we have the context and user entity names, here is the EF Core version. I'll use the generated context directly:
+
+```
+FooBarDbContext
+```
+
+For the three additional tables, I'll use `FooBarDbContext.Set<TEntity>()`. That avoids depending on the generated `DbSet` property names, while still using strongly typed EF Core entities.
+
+The code assumes EF Core Power Tools generated these entity types in `MyApplication.Data.Entities`:
+
+- `UserPasswordHistory`
+- `UserAuditLog`
+- `UserServiceAccount`
+
+It also assumes the additional columns were added to `AspNetUser` as previously specified.
+
+## **1.&#x20;**`ApplicationUserRepository.cs`
+
+```
+using Microsoft.EntityFrameworkCore;
+
+using MyApplication.Data.Contexts;
+using MyApplication.Data.Entities;
+using MyApplication.Data.Interfaces;
+using MyApplication.Data.Models;
+
+namespace MyApplication.Data.Repositories;
+
+/// <summary>
+/// Provides database access for application users.
+/// </summary>
+public sealed class ApplicationUserRepository : IApplicationUserStore
+{
+    private readonly FooBarDbContext _context;
+
+    /// <summary>
+    /// Initialises a new instance of the <see cref="ApplicationUserRepository"/> class.
+    /// </summary>
+    public ApplicationUserRepository(FooBarDbContext context)
+    {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
+    }
+
+    /// <inheritdoc />
+    public async Task<ApplicationUserRecord?> FindByUserNameAsync(
+        string normalizedUserName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(normalizedUserName);
+
+        return await _context.AspNetUsers
+            .AsNoTracking()
+            .Where(user => user.NormalizedUserName == normalizedUserName)
+            .Select(user => new ApplicationUserRecord
+            {
+                Id = user.Id,
+                UserName = user.UserName,
+                NormalizedUserName = user.NormalizedUserName,
+                Email = user.Email,
+                NormalizedEmail = user.NormalizedEmail,
+                PasswordHash = user.PasswordHash,
+                SecurityStamp = user.SecurityStamp,
+                ConcurrencyStamp = user.ConcurrencyStamp,
+                AuthenticationProvider = user.AuthenticationProvider,
+                ActiveDirectoryObjectId = user.ActiveDirectoryObjectId,
+                DisplayName = user.DisplayName,
+                Department = user.Department,
+                IsActive = user.IsActive
+            })
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<ApplicationUserRecord?> FindByIdAsync(
+        string userId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+
+        return await _context.AspNetUsers
+            .AsNoTracking()
+            .Where(user => user.Id == userId)
+            .Select(user => new ApplicationUserRecord
+            {
+                Id = user.Id,
+                UserName = user.UserName,
+                NormalizedUserName = user.NormalizedUserName,
+                Email = user.Email,
+                NormalizedEmail = user.NormalizedEmail,
+                PasswordHash = user.PasswordHash,
+                SecurityStamp = user.SecurityStamp,
+                ConcurrencyStamp = user.ConcurrencyStamp,
+                AuthenticationProvider = user.AuthenticationProvider,
+                ActiveDirectoryObjectId = user.ActiveDirectoryObjectId,
+                DisplayName = user.DisplayName,
+                Department = user.Department,
+                IsActive = user.IsActive
+            })
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<ApplicationUserRecord?> FindByActiveDirectoryObjectIdAsync(
+        string activeDirectoryObjectId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(activeDirectoryObjectId);
+
+        return await _context.AspNetUsers
+            .AsNoTracking()
+            .Where(user =>
+                user.ActiveDirectoryObjectId == activeDirectoryObjectId &&
+                user.AuthenticationProvider == (byte)AuthenticationProvider.ActiveDirectory)
+            .Select(user => new ApplicationUserRecord
+            {
+                Id = user.Id,
+                UserName = user.UserName,
+                NormalizedUserName = user.NormalizedUserName,
+                Email = user.Email,
+                NormalizedEmail = user.NormalizedEmail,
+                PasswordHash = user.PasswordHash,
+                SecurityStamp = user.SecurityStamp,
+                ConcurrencyStamp = user.ConcurrencyStamp,
+                AuthenticationProvider = user.AuthenticationProvider,
+                ActiveDirectoryObjectId = user.ActiveDirectoryObjectId,
+                DisplayName = user.DisplayName,
+                Department = user.Department,
+                IsActive = user.IsActive
+            })
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task CreateAsync(
+        ApplicationUserRecord user,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        ArgumentException.ThrowIfNullOrWhiteSpace(user.Id);
+
+        AspNetUser entity = new()
+        {
+            Id = user.Id,
+            UserName = user.UserName,
+            NormalizedUserName = user.NormalizedUserName,
+            Email = user.Email,
+            NormalizedEmail = user.NormalizedEmail,
+            EmailConfirmed = false,
+            PasswordHash = user.PasswordHash,
+            SecurityStamp = user.SecurityStamp,
+            ConcurrencyStamp = user.ConcurrencyStamp,
+            PhoneNumber = null,
+            PhoneNumberConfirmed = false,
+            TwoFactorEnabled = false,
+            LockoutEnd = null,
+            LockoutEnabled = false,
+            AccessFailedCount = 0,
+            AuthenticationProvider = user.AuthenticationProvider,
+            ActiveDirectoryObjectId = user.ActiveDirectoryObjectId,
+            DisplayName = user.DisplayName,
+            Department = user.Department,
+            IsActive = user.IsActive
+        };
+
+        await _context.AspNetUsers.AddAsync(entity, cancellationToken);
+        await _context.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> UpdateAsync(
+        ApplicationUserRecord user,
+        string expectedConcurrencyStamp,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        ArgumentException.ThrowIfNullOrWhiteSpace(user.Id);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedConcurrencyStamp);
+
+        int affectedRows = await _context.AspNetUsers
+            .Where(existing =>
+                existing.Id == user.Id &&
+                existing.ConcurrencyStamp == expectedConcurrencyStamp)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(existing => existing.UserName, user.UserName)
+                    .SetProperty(existing => existing.NormalizedUserName, user.NormalizedUserName)
+                    .SetProperty(existing => existing.Email, user.Email)
+                    .SetProperty(existing => existing.NormalizedEmail, user.NormalizedEmail)
+                    .SetProperty(existing => existing.AuthenticationProvider, user.AuthenticationProvider)
+                    .SetProperty(existing => existing.ActiveDirectoryObjectId, user.ActiveDirectoryObjectId)
+                    .SetProperty(existing => existing.DisplayName, user.DisplayName)
+                    .SetProperty(existing => existing.Department, user.Department)
+                    .SetProperty(existing => existing.IsActive, user.IsActive)
+                    .SetProperty(existing => existing.ConcurrencyStamp, user.ConcurrencyStamp),
+                cancellationToken);
+
+        return affectedRows == 1;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> UpdatePasswordAsync(
+        string userId,
+        string expectedConcurrencyStamp,
+        string newPasswordHash,
+        string newSecurityStamp,
+        string newConcurrencyStamp,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedConcurrencyStamp);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newPasswordHash);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newSecurityStamp);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newConcurrencyStamp);
+
+        int affectedRows = await _context.AspNetUsers
+            .Where(user =>
+                user.Id == userId &&
+                user.ConcurrencyStamp == expectedConcurrencyStamp &&
+                user.AuthenticationProvider == (byte)AuthenticationProvider.Local &&
+                user.IsActive)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(user => user.PasswordHash, newPasswordHash)
+                    .SetProperty(user => user.SecurityStamp, newSecurityStamp)
+                    .SetProperty(user => user.ConcurrencyStamp, newConcurrencyStamp),
+                cancellationToken);
+
+        return affectedRows == 1;
+    }
+}
+```
+
+## **2.&#x20;**`UserPasswordHistoryRepository.cs`
+
+This uses an EF Core transaction at `Serializable` isolation. The user is read and updated inside the same transaction, and the previous hash is retained before the new hash is saved.
+
+```
+using System.Data;
+
+using Microsoft.EntityFrameworkCore;
+
+using MyApplication.Data.Contexts;
+using MyApplication.Data.Entities;
+using MyApplication.Data.Interfaces;
+using MyApplication.Data.Models;
+
+namespace MyApplication.Data.Repositories;
+
+/// <summary>
+/// Provides access to local user password history.
+/// </summary>
+public sealed class UserPasswordHistoryRepository : IUserPasswordHistoryRepository
+{
+    private readonly FooBarDbContext _context;
+
+    /// <summary>
+    /// Initialises a new instance of the <see cref="UserPasswordHistoryRepository"/> class.
+    /// </summary>
+    public UserPasswordHistoryRepository(FooBarDbContext context)
+    {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<UserPasswordHistoryRecord>> GetRecentAsync(
+        string userId,
+        int count,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+
+        if (count < 1)
+        {
+            return [];
+        }
+
+        return await _context.Set<UserPasswordHistory>()
+            .AsNoTracking()
+            .Where(history => history.UserId == userId)
+            .OrderByDescending(history => history.ChangedUtc)
+            .ThenByDescending(history => history.Id)
+            .Take(count)
+            .Select(history => new UserPasswordHistoryRecord
+            {
+                Id = history.Id,
+                PasswordHash = history.PasswordHash,
+                ChangedUtc = history.ChangedUtc
+            })
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task ChangePasswordAsync(
+        string userId,
+        string expectedConcurrencyStamp,
+        string newPasswordHash,
+        string newSecurityStamp,
+        string newConcurrencyStamp,
+        int historyCount,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedConcurrencyStamp);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newPasswordHash);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newSecurityStamp);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newConcurrencyStamp);
+
+        if (historyCount < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(historyCount));
+        }
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable,
+            cancellationToken);
+
+        try
+        {
+            AspNetUser? user = await _context.AspNetUsers
+                .SingleOrDefaultAsync(
+                    candidate =>
+                        candidate.Id == userId &&
+                        candidate.AuthenticationProvider == (byte)AuthenticationProvider.Local &&
+                        candidate.IsActive,
+                    cancellationToken);
+
+            if (user is null ||
+                user.ConcurrencyStamp != expectedConcurrencyStamp)
+            {
+                throw new InvalidOperationException(
+                    "The password could not be changed because the account is unavailable or has been modified.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(user.PasswordHash))
+            {
+                UserPasswordHistory history = new()
+                {
+                    UserId = user.Id,
+                    PasswordHash = user.PasswordHash,
+                    ChangedUtc = DateTime.UtcNow
+                };
+
+                await _context.Set<UserPasswordHistory>()
+                    .AddAsync(history, cancellationToken);
+            }
+
+            user.PasswordHash = newPasswordHash;
+            user.SecurityStamp = newSecurityStamp;
+            user.ConcurrencyStamp = newConcurrencyStamp;
+
+            await _context.SaveChangesAsync(cancellationToken);
+
+            List<UserPasswordHistory> historyToRemove = await _context
+                .Set<UserPasswordHistory>()
+                .Where(history => history.UserId == userId)
+                .OrderByDescending(history => history.ChangedUtc)
+                .ThenByDescending(history => history.Id)
+                .Skip(historyCount)
+                .ToListAsync(cancellationToken);
+
+            if (historyToRemove.Count > 0)
+            {
+                _context.Set<UserPasswordHistory>().RemoveRange(historyToRemove);
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+}
+```
+
+For this repository, the API should treat a concurrency failure as a rejected password change and ask the user to retry. A SQL Server deadlock or serialization failure should also be handled as a transient failure, with a bounded retry policy if appropriate.
+
+## **3.&#x20;**`UserAuditRepository.cs`
+
+```
+using Microsoft.EntityFrameworkCore;
+
+using MyApplication.Data.Contexts;
+using MyApplication.Data.Entities;
+using MyApplication.Data.Interfaces;
+using MyApplication.Data.Models;
+
+namespace MyApplication.Data.Repositories;
+
+/// <summary>
+/// Writes application user audit records to the database.
+/// </summary>
+public sealed class UserAuditRepository : IUserAuditRepository
+{
+    private readonly FooBarDbContext _context;
+
+    /// <summary>
+    /// Initialises a new instance of the <see cref="UserAuditRepository"/> class.
+    /// </summary>
+    public UserAuditRepository(FooBarDbContext context)
+    {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
+    }
+
+    /// <inheritdoc />
+    public async Task AddAsync(
+        UserAuditRecord record,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentException.ThrowIfNullOrWhiteSpace(record.Action);
+
+        UserAuditLog entity = new()
+        {
+            UserId = record.UserId,
+            ChangedByUserId = record.ChangedByUserId,
+            ServiceAccountId = record.ServiceAccountId,
+            AuthenticationProvider = record.AuthenticationProvider,
+            Action = record.Action,
+            PropertyName = record.PropertyName,
+            OldValue = record.OldValue,
+            NewValue = record.NewValue,
+            ChangedUtc = record.ChangedUtc,
+            CorrelationId = record.CorrelationId
+        };
+
+        await _context.Set<UserAuditLog>()
+            .AddAsync(entity, cancellationToken);
+
+        await _context.SaveChangesAsync(cancellationToken);
+    }
+}
+```
+
+## **4.&#x20;**`UserServiceAccountRepository.cs`
+
+Global assignments are included for any page. Page-specific assignments are included only when the supplied `pageKey` matches.
+
+```
+using Microsoft.EntityFrameworkCore;
+
+using MyApplication.Data.Contexts;
+using MyApplication.Data.Entities;
+using MyApplication.Data.Interfaces;
+using MyApplication.Data.Models;
+
+namespace MyApplication.Data.Repositories;
+
+/// <summary>
+/// Provides access to user-to-service-account assignments.
+/// </summary>
+public sealed class UserServiceAccountRepository : IUserServiceAccountRepository
+{
+    private readonly FooBarDbContext _context;
+
+    /// <summary>
+    /// Initialises a new instance of the <see cref="UserServiceAccountRepository"/> class.
+    /// </summary>
+    public UserServiceAccountRepository(FooBarDbContext context)
+    {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<UserServiceAccountRecord>> GetActiveAssignmentsAsync(
+        string userId,
+        string? pageKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+
+        IQueryable<UserServiceAccount> query = _context
+            .Set<UserServiceAccount>()
+            .AsNoTracking()
+            .Where(assignment =>
+                assignment.UserId == userId &&
+                assignment.IsActive);
+
+        if (pageKey is null)
+        {
+            query = query.Where(assignment => assignment.PageKey == null);
+        }
+        else
+        {
+            query = query.Where(assignment =>
+                assignment.PageKey == null ||
+                assignment.PageKey == pageKey);
+        }
+
+        return await query
+            .OrderByDescending(assignment => assignment.IsDefault)
+            .ThenBy(assignment => assignment.CreatedUtc)
+            .Select(assignment => new UserServiceAccountRecord
+            {
+                Id = assignment.Id,
+                UserId = assignment.UserId,
+                ServiceAccountId = assignment.ServiceAccountId,
+                PageKey = assignment.PageKey,
+                IsDefault = assignment.IsDefault,
+                IsActive = assignment.IsActive,
+                CreatedUtc = assignment.CreatedUtc,
+                RevokedUtc = assignment.RevokedUtc
+            })
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> HasActiveAssignmentAsync(
+        string userId,
+        string serviceAccountId,
+        string? pageKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(serviceAccountId);
+
+        IQueryable<UserServiceAccount> query = _context
+            .Set<UserServiceAccount>()
+            .AsNoTracking()
+            .Where(assignment =>
+                assignment.UserId == userId &&
+                assignment.ServiceAccountId == serviceAccountId &&
+                assignment.IsActive);
+
+        if (pageKey is null)
+        {
+            query = query.Where(assignment => assignment.PageKey == null);
+        }
+        else
+        {
+            query = query.Where(assignment =>
+                assignment.PageKey == null ||
+                assignment.PageKey == pageKey);
+        }
+
+        return await query.AnyAsync(cancellationToken);
+    }
+}
+```
+
+## **5. Update&#x20;**`IocStartup.cs`
+
+Register the repositories against the generated context:
+
+```
+using Microsoft.Extensions.DependencyInjection;
+
+using MyApplication.Data.Contexts;
+using MyApplication.Data.Interfaces;
+using MyApplication.Data.Repositories;
+
+namespace MyApplication.Data.Infrastructure;
+
+/// <summary>
+/// Provides dependency injection registration for the application data layer.
+/// </summary>
+public static class IocStartup
+{
+    /// <summary>
+    /// Registers application data services.
+    /// </summary>
+    public static IServiceCollection AddApplicationData(
+        this IServiceCollection services)
+    {
+        services.AddScoped<IApplicationUserStore, ApplicationUserRepository>();
+        services.AddScoped<IUserPasswordHistoryRepository, UserPasswordHistoryRepository>();
+        services.AddScoped<IUserAuditRepository, UserAuditRepository>();
+        services.AddScoped<IUserServiceAccountRepository, UserServiceAccountRepository>();
+
+        return services;
+    }
+}
+```
+
+Your existing `FooBarDbContext` registration should remain in your application's database configuration, for example:
+
+```
+services.AddDbContext<FooBarDbContext>(options =>
+    options.UseSqlServer(
+        configuration.GetConnectionString("DefaultConnection")));
+```
+
+You do **not** need the additional `DbContext` base-type registration I suggested for the inline SQL implementation. These repositories now inject `FooBarDbContext` directly.
+
+## **6. Important assumptions to check**
+
+| Item                    | Assumption in the code |
+| ----------------------- | ---------------------- |
+| User entity             | `AspNetUser`           |
+| User DbSet              | `AspNetUsers`          |
+| Password history entity | `UserPasswordHistory`  |
+| Audit entity            | `UserAuditLog`         |
+| Assignment entity       | `UserServiceAccount`   |
+| User ID                 | `string`               |
+| Password history ID     | `long`                 |
+| Assignment ID           | `long`                 |
+| Service account ID      | `string`               |
+| Authentication provider | `byte`                 |
+
+The service account ID assumption is particularly important: if your existing `ServiceAccount` primary key is an integer, the assignment entity, model, and repository need to use that type instead.
+
+Also, these repositories assume EF Core Power Tools has generated the three additional entities and included them in the context model. `Set<TEntity>()` avoids needing their `DbSet` property names, but it does not remove the need for those entity types to exist.
+
+**One architectural note:** `UserAuditRepository.AddAsync` saves immediately. If you need an audit record to be committed atomically with a business update, both operations should share the same `FooBarDbContext` transaction rather than saving the audit independently.
+
+This replaces the earlier inline SQL repository versions; use these EF Core versions instead.
+
 ## **12. Part 2 completion checklist**
 
 Implementation checklist
