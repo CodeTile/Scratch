@@ -1,1864 +1,1341 @@
-# **Complete implementation — .NET 10 / C# 14**
+Below is the regenerated Sprint 1 implementation, incorporating your actual architectural decisions.
 
-We'll build this in dependency order, so each section can be implemented and tested before moving to the next. This is **Part 1: SQL Server and database-first preparation**. It establishes the database contract for the rest of the code.
+I've consolidated the dependency injection into **one&#x20;**`IServiceCollection`**&#x20;extension**, retained `ApplicationUser : IdentityUser`, and removed all audit-viewing functionality.
 
-The final decisions are:
+I've also corrected some important details from the earlier version:
 
-- Local accounts authenticate with application passwords and access business functionality.
-- AD accounts authenticate through Active Directory and are strictly administration-only.
-- AD users are provisioned into `AspNetUsers` on first eligible login.
-- Any one of several configured AD groups grants administrator eligibility.
-- AD group names are configured by display name in `appsettings.json`.
-- Local users can be assigned service accounts.
-- Self-service password changes reject the current and previous 19 passwords.
-- All relevant changes are audited.
-- Existing generated entities and the database context are retained.
+- The actor record and actor service have distinct names.
+- The interceptor supports synchronous and asynchronous saves.
+- Audit records are added to the same DbContext transaction.
+- Password hashes, security stamps and concurrency stamps are excluded.
+- Background operations must supply an explicit system or service actor rather than inherit an interactive Blazor user's identity.
+- Audit values are redacted according to a central policy.
+- The audit table has no foreign key to `AspNetUsers`.
 
-# **Part 1 — SQL Server**
-
-## **1. Database assumptions and safeguards**
-
-We will retain your existing structure:
+# **1. Solution structure**
 
 ```
-MyApplication.Data/
-├── Contexts/
-│   └── ExistingDatabaseContext.cs
-├── Entities/
-│   ├── AspNetUser.cs
-│   ├── ServiceAccount.cs
-│   └── ...
-└── Infrastructure/
-    └── IocStartup.cs
-```
-
-The scripts below assume:
-
-- The existing user table is `dbo.AspNetUsers`.
-- Its primary key is `Id`.
-- Its key type is `NVARCHAR(450)`.
-- Your existing `AspNetUsers` table is not dropped or recreated.
-- `ServiceAccount` is an existing business table whose key definition must be checked before we add a foreign key.
-
-**Important:** The scripts deliberately do not create a foreign key to `ServiceAccount`, because its actual key type and column are not known. We will establish that relationship after checking the existing schema.
-
-## **2. Preflight script**
-
-Run this before the migration scripts.
-
-```
-
-SET NOCOUNT ON;
-
-IF OBJECT_ID(N'dbo.AspNetUsers', N'U') IS NULL
-    THROW 50001, 'dbo.AspNetUsers does not exist.', 1;
-
-IF COL_LENGTH(N'dbo.AspNetUsers', N'Id') IS NULL
-    THROW 50002, 'dbo.AspNetUsers.Id does not exist.', 1;
-
-SELECT
-    s.name AS SchemaName,
-    t.name AS TableName,
-    c.name AS ColumnName,
-    ty.name AS DataType,
-    c.max_length AS MaxLengthInBytes,
-    c.is_nullable AS IsNullable
-FROM sys.columns AS c
-INNER JOIN sys.tables AS t
-    ON t.object_id = c.object_id
-INNER JOIN sys.schemas AS s
-    ON s.schema_id = t.schema_id
-INNER JOIN sys.types AS ty
-    ON ty.user_type_id = c.user_type_id
-WHERE s.name = N'dbo'
-  AND t.name IN (N'AspNetUsers', N'ServiceAccount')
-ORDER BY
-    t.name,
-    c.column_id;
-
-SELECT
-    i.name AS IndexName,
-    i.is_primary_key AS IsPrimaryKey,
-    i.is_unique AS IsUnique,
-    i.filter_definition AS FilterDefinition
-FROM sys.indexes AS i
-WHERE i.object_id = OBJECT_ID(N'dbo.AspNetUsers')
-ORDER BY i.name;
-
-SELECT
-    NormalizedUserName,
-    COUNT(*) AS DuplicateCount
-FROM dbo.AspNetUsers
-WHERE NormalizedUserName IS NOT NULL
-GROUP BY NormalizedUserName
-HAVING COUNT(*) > 1;
-
-```
-
-Confirm that `AspNetUsers.Id` is `NVARCHAR(450)` (900 bytes). If not, the new `UserId` columns and foreign keys must be adjusted to match its actual type and collation.
-
-## **3. Script 001 — Extend AspNetUsers**
-
-This adds application-specific properties without changing the existing Identity columns.
-
-```
-
-SET NOCOUNT ON;
-SET XACT_ABORT ON;
-
-BEGIN TRY
-    BEGIN TRANSACTION;
-
-    IF OBJECT_ID(N'dbo.AspNetUsers', N'U') IS NULL
-        THROW 50001, 'dbo.AspNetUsers does not exist.', 1;
-
-    IF COL_LENGTH(N'dbo.AspNetUsers', N'AuthenticationProvider') IS NULL
-    BEGIN
-        ALTER TABLE dbo.AspNetUsers
-        ADD AuthenticationProvider TINYINT NOT NULL
-            CONSTRAINT DF_AspNetUsers_AuthenticationProvider
-            DEFAULT (0);
-    END;
-
-    IF COL_LENGTH(N'dbo.AspNetUsers', N'ActiveDirectoryObjectId') IS NULL
-    BEGIN
-        ALTER TABLE dbo.AspNetUsers
-        ADD ActiveDirectoryObjectId NVARCHAR(256) NULL;
-    END;
-
-    IF COL_LENGTH(N'dbo.AspNetUsers', N'DisplayName') IS NULL
-    BEGIN
-        ALTER TABLE dbo.AspNetUsers
-        ADD DisplayName NVARCHAR(256) NULL;
-    END;
-
-    IF COL_LENGTH(N'dbo.AspNetUsers', N'Department') IS NULL
-    BEGIN
-        ALTER TABLE dbo.AspNetUsers
-        ADD Department NVARCHAR(128) NULL;
-    END;
-
-    IF COL_LENGTH(N'dbo.AspNetUsers', N'IsActive') IS NULL
-    BEGIN
-        ALTER TABLE dbo.AspNetUsers
-        ADD IsActive BIT NOT NULL
-            CONSTRAINT DF_AspNetUsers_IsActive
-            DEFAULT (1);
-    END;
-
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM sys.indexes
-        WHERE object_id = OBJECT_ID(N'dbo.AspNetUsers')
-          AND name = N'UX_AspNetUsers_ActiveDirectoryObjectId'
-    )
-    BEGIN
-        CREATE UNIQUE NONCLUSTERED INDEX
-            UX_AspNetUsers_ActiveDirectoryObjectId
-        ON dbo.AspNetUsers (ActiveDirectoryObjectId)
-        WHERE ActiveDirectoryObjectId IS NOT NULL;
-    END;
-
-    COMMIT TRANSACTION;
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0
-        ROLLBACK TRANSACTION;
-
-    THROW;
-END CATCH;
-
-```
-
-Authentication provider values:
-
-| Value | Meaning          |
-| ----- | ---------------- |
-| 0     | Local            |
-| 1     | Active Directory |
-
-Existing users receive provider value `0`. If AD users already exist, migrate them explicitly using a reliable AD identifier. Do not infer their provider from email addresses or usernames.
-
-`ActiveDirectoryObjectId` stores the AD user's immutable object GUID in canonical string form. The unique filtered index prevents the same AD identity being provisioned twice.
-
-## **4. Script 002 — UserPasswordHistory**
-
-Stores previous local password hashes.
-
-```
-
-SET NOCOUNT ON;
-SET XACT_ABORT ON;
-
-BEGIN TRY
-    BEGIN TRANSACTION;
-
-    IF OBJECT_ID(N'dbo.AspNetUsers', N'U') IS NULL
-        THROW 50001, 'dbo.AspNetUsers does not exist.', 1;
-
-    IF OBJECT_ID(N'dbo.UserPasswordHistory', N'U') IS NULL
-    BEGIN
-        CREATE TABLE dbo.UserPasswordHistory
-        (
-            Id BIGINT IDENTITY(1,1) NOT NULL,
-
-            UserId NVARCHAR(450) NOT NULL,
-
-            PasswordHash NVARCHAR(MAX) NOT NULL,
-
-            ChangedUtc DATETIME2(7) NOT NULL
-                CONSTRAINT DF_UserPasswordHistory_ChangedUtc
-                DEFAULT (SYSUTCDATETIME()),
-
-            CONSTRAINT PK_UserPasswordHistory
-                PRIMARY KEY CLUSTERED (Id),
-
-            CONSTRAINT FK_UserPasswordHistory_AspNetUsers
-                FOREIGN KEY (UserId)
-                REFERENCES dbo.AspNetUsers (Id)
-                ON DELETE CASCADE
-        );
-    END;
-
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM sys.indexes
-        WHERE object_id = OBJECT_ID(N'dbo.UserPasswordHistory')
-          AND name = N'IX_UserPasswordHistory_UserId_ChangedUtc'
-    )
-    BEGIN
-        CREATE NONCLUSTERED INDEX
-            IX_UserPasswordHistory_UserId_ChangedUtc
-        ON dbo.UserPasswordHistory
-        (
-            UserId,
-            ChangedUtc DESC,
-            Id DESC
-        );
-    END;
-
-    COMMIT TRANSACTION;
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0
-        ROLLBACK TRANSACTION;
-
-    THROW;
-END CATCH;
-
-```
-
-Password policy:
-
-- Compare the proposed password against the current hash and the 19 most recent historical hashes.
-- On a successful self-service change, save the old hash before updating the current hash.
-- Retain only 19 historical hashes after a successful change.
-- Do not apply this rule to administrator-initiated resets.
-- Do not apply local password history to AD accounts.
-- Never store plain-text passwords.
-- Password history cannot recover passwords changed before this feature was introduced.
-
-## **5. Script 003 — UserAuditLogs**
-
-Stores user, authentication, provisioning, password and service-account audit events.
-
-```
-
-SET NOCOUNT ON;
-SET XACT_ABORT ON;
-
-BEGIN TRY
-    BEGIN TRANSACTION;
-
-    IF OBJECT_ID(N'dbo.UserAuditLogs', N'U') IS NULL
-    BEGIN
-        CREATE TABLE dbo.UserAuditLogs
-        (
-            Id BIGINT IDENTITY(1,1) NOT NULL,
-
-            UserId NVARCHAR(450) NULL,
-            ChangedByUserId NVARCHAR(450) NULL,
-            ServiceAccountId NVARCHAR(450) NULL,
-
-            AuthenticationProvider TINYINT NULL,
-
-            Action NVARCHAR(100) NOT NULL,
-            PropertyName NVARCHAR(128) NULL,
-
-            OldValue NVARCHAR(MAX) NULL,
-            NewValue NVARCHAR(MAX) NULL,
-
-            ChangedUtc DATETIME2(7) NOT NULL
-                CONSTRAINT DF_UserAuditLogs_ChangedUtc
-                DEFAULT (SYSUTCDATETIME()),
-
-            CorrelationId NVARCHAR(100) NULL,
-
-            CONSTRAINT PK_UserAuditLogs
-                PRIMARY KEY CLUSTERED (Id)
-        );
-    END;
-
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM sys.indexes
-        WHERE object_id = OBJECT_ID(N'dbo.UserAuditLogs')
-          AND name = N'IX_UserAuditLogs_UserId_ChangedUtc'
-    )
-    BEGIN
-        CREATE NONCLUSTERED INDEX
-            IX_UserAuditLogs_UserId_ChangedUtc
-        ON dbo.UserAuditLogs
-        (
-            UserId,
-            ChangedUtc DESC
-        );
-    END;
-
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM sys.indexes
-        WHERE object_id = OBJECT_ID(N'dbo.UserAuditLogs')
-          AND name = N'IX_UserAuditLogs_ChangedByUserId_ChangedUtc'
-    )
-    BEGIN
-        CREATE NONCLUSTERED INDEX
-            IX_UserAuditLogs_ChangedByUserId_ChangedUtc
-        ON dbo.UserAuditLogs
-        (
-            ChangedByUserId,
-            ChangedUtc DESC
-        );
-    END;
-
-    COMMIT TRANSACTION;
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0
-        ROLLBACK TRANSACTION;
-
-    THROW;
-END CATCH;
-
-```
-
-There are intentionally no foreign keys from audit records to users or service accounts. This preserves audit history if an account is subsequently deleted.
-
-Never write passwords, password hashes, authentication tokens or other secrets into audit records.
-
-## **6. Script 004 — UserServiceAccounts**
-
-Maps local application users to existing service accounts.
-
-Supports:
-
-- Global assignments.
-- Page-specific assignments.
-- Default service accounts.
-- Revocation without deleting assignment history.
-- Multiple assignments in the future.
-
-```
-
-SET NOCOUNT ON;
-SET XACT_ABORT ON;
-
-BEGIN TRY
-    BEGIN TRANSACTION;
-
-    IF OBJECT_ID(N'dbo.AspNetUsers', N'U') IS NULL
-        THROW 50001, 'dbo.AspNetUsers does not exist.', 1;
-
-    IF OBJECT_ID(N'dbo.UserServiceAccounts', N'U') IS NULL
-    BEGIN
-        CREATE TABLE dbo.UserServiceAccounts
-        (
-            Id BIGINT IDENTITY(1,1) NOT NULL,
-
-            UserId NVARCHAR(450) NOT NULL,
-
-            -- Align this with the actual ServiceAccount primary key
-            -- before adding a foreign key to that existing table.
-            ServiceAccountId NVARCHAR(450) NOT NULL,
-
-            PageKey NVARCHAR(128) NULL,
-
-            IsDefault BIT NOT NULL
-                CONSTRAINT DF_UserServiceAccounts_IsDefault
-                DEFAULT (0),
-
-            IsActive BIT NOT NULL
-                CONSTRAINT DF_UserServiceAccounts_IsActive
-                DEFAULT (1),
-
-            CreatedUtc DATETIME2(7) NOT NULL
-                CONSTRAINT DF_UserServiceAccounts_CreatedUtc
-                DEFAULT (SYSUTCDATETIME()),
-
-            RevokedUtc DATETIME2(7) NULL,
-
-            CONSTRAINT PK_UserServiceAccounts
-                PRIMARY KEY CLUSTERED (Id),
-
-            CONSTRAINT FK_UserServiceAccounts_AspNetUsers
-                FOREIGN KEY (UserId)
-                REFERENCES dbo.AspNetUsers (Id)
-                ON DELETE CASCADE
-        );
-    END;
-
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM sys.indexes
-        WHERE object_id = OBJECT_ID(N'dbo.UserServiceAccounts')
-          AND name = N'IX_UserServiceAccounts_UserId_IsActive'
-    )
-    BEGIN
-        CREATE NONCLUSTERED INDEX
-            IX_UserServiceAccounts_UserId_IsActive
-        ON dbo.UserServiceAccounts (UserId, IsActive);
-    END;
-
-    -- Prevent duplicate active global assignments.
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM sys.indexes
-        WHERE object_id = OBJECT_ID(N'dbo.UserServiceAccounts')
-          AND name = N'UX_UserServiceAccounts_Global'
-    )
-    BEGIN
-        CREATE UNIQUE NONCLUSTERED INDEX
-            UX_UserServiceAccounts_Global
-        ON dbo.UserServiceAccounts (UserId, ServiceAccountId)
-        WHERE PageKey IS NULL
-          AND IsActive = 1;
-    END;
-
-    -- Prevent duplicate active page-specific assignments.
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM sys.indexes
-        WHERE object_id = OBJECT_ID(N'dbo.UserServiceAccounts')
-          AND name = N'UX_UserServiceAccounts_Page'
-    )
-    BEGIN
-        CREATE UNIQUE NONCLUSTERED INDEX
-            UX_UserServiceAccounts_Page
-        ON dbo.UserServiceAccounts
-        (
-            UserId,
-            ServiceAccountId,
-            PageKey
-        )
-        WHERE PageKey IS NOT NULL
-          AND IsActive = 1;
-    END;
-
-    -- Only one active global default per user.
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM sys.indexes
-        WHERE object_id = OBJECT_ID(N'dbo.UserServiceAccounts')
-          AND name = N'UX_UserServiceAccounts_GlobalDefault'
-    )
-    BEGIN
-        CREATE UNIQUE NONCLUSTERED INDEX
-            UX_UserServiceAccounts_GlobalDefault
-        ON dbo.UserServiceAccounts (UserId)
-        WHERE PageKey IS NULL
-          AND IsDefault = 1
-          AND IsActive = 1;
-    END;
-
-    -- Only one active default per user and page.
-    IF NOT EXISTS
-    (
-        SELECT 1
-        FROM sys.indexes
-        WHERE object_id = OBJECT_ID(N'dbo.UserServiceAccounts')
-          AND name = N'UX_UserServiceAccounts_PageDefault'
-    )
-    BEGIN
-        CREATE UNIQUE NONCLUSTERED INDEX
-            UX_UserServiceAccounts_PageDefault
-        ON dbo.UserServiceAccounts (UserId, PageKey)
-        WHERE PageKey IS NOT NULL
-          AND IsDefault = 1
-          AND IsActive = 1;
-    END;
-
-    COMMIT TRANSACTION;
-END TRY
-BEGIN CATCH
-    IF @@TRANCOUNT > 0
-        ROLLBACK TRANSACTION;
-
-    THROW;
-END CATCH;
-
-```
-
-**Important deployment checks:**
-
-1. `UserId` must match the existing `AspNetUsers.Id` type and collation.
-2. `ServiceAccountId` must be changed to match the actual existing `ServiceAccount` primary key before deployment.
-3. We will add the service-account foreign key only after confirming the existing schema.
-4. The database permits future multiple assignments. The initial one-active-assignment limit will be enforced in the API using a transaction and concurrency protection.
-5. The API must reject all service-account assignment attempts for AD users.
-
-## **7. Database-first generation**
-
-After running the SQL scripts:
-
-1. Open EF Core Power Tools in Visual Studio.
-2. Select Reverse Engineer.
-3. Select your existing SQL Server database.
-4. Select the existing `AspNetUsers` table and the three new tables.
-5. Select the existing `ServiceAccount` table only if it is already part of your generated model.
-6. Preserve your existing entity and context naming.
-7. Generate the entities and update the existing context.
-
-The new generated entities should correspond to:
-
-```
-UserPasswordHistory
-UserAuditLog
-UserServiceAccount
-```
-
-The exact generated property and navigation names will be determined by the database schema and Power Tools settings.
-
-Do not manually write these POCOs.
-
-## **8. What comes next**
-
-The remaining implementation will be delivered in this dependency order:
-
-| Part | Implementation                                                        |
-| ---- | --------------------------------------------------------------------- |
-| 1    | SQL Server and database-first preparation                             |
-| 2    | Data project: interfaces, services, Identity integration and auditing |
-| 3    | API: local authentication, AD authentication and JIT provisioning     |
-| 4    | API: authorization, controllers and service-account delegation        |
-| 5    | Portal: cookie authentication, login, logout and UI integration       |
-| 6    | Configuration, dependency injection and security settings             |
-| 7    | xUnit v3 tests using Microsoft Testing Platform and Shouldly          |
-
-The next part will address an important integration issue: your generated `AspNetUser` is a database-first POCO, so we need to integrate it with ASP.NET Core Identity without assuming it inherits from `IdentityUser` or changing the generated class.
-
-**Part 1 is the database foundation.** Once the generated model is available in your project, the remaining code can be written against its actual database-first structure without requiring you to disclose those files.
-
-====================================================================
-
-# **Part 2 — Data project**
-
-This part implements the data-access layer for the authentication and authorization design.
-
-It builds on the SQL tables from Part 1 and your existing database-first EF Core model.
-
-**Important design decision:** We will not make your generated `AspNetUser` inherit from `IdentityUser`. Instead, we will keep the generated entity as it is and use an application-owned Identity integration. This avoids modifying generated code and avoids assuming the structure of your existing `ExistingDatabaseContext`.
-
-## **1. Data project structure**
-
-Add the following application-owned folders and files:
-
-```
-MyApplication.Data/
+YourSolution
 │
-├── Contexts/
-│   └── ExistingDatabaseContext.cs       (generated)
+├── Domain
+│   └── Identity
+│       └── IdentityUserAudit.cs
 │
-├── Entities/
-│   ├── AspNetUser.cs                     (generated)
-│   ├── ServiceAccount.cs                 (generated)
-│   ├── UserPasswordHistory.cs             (generated)
-│   ├── UserAuditLog.cs                    (generated)
-│   └── UserServiceAccount.cs              (generated)
+├── Application
+│   └── Identity
+│       ├── IdentityAuditActor.cs
+│       └── IIdentityAuditActor.cs
 │
-├── Interfaces/
-│   ├── IApplicationUserStore.cs
-│   ├── IUserPasswordHistoryRepository.cs
-│   ├── IUserAuditRepository.cs
-│   └── IUserServiceAccountRepository.cs
+├── Infrastructure
+│   ├── Data
+│   │   └── ApplicationDbContext.cs
+│   │
+│   └── Identity
+│       ├── IdentityUserAuditInterceptor.cs
+│       ├── IdentityAuditPropertyPolicy.cs
+│       └── HttpBlazorIdentityAuditActor.cs
 │
-├── Models/
-│   ├── ApplicationUserRecord.cs
-│   ├── UserPasswordHistoryRecord.cs
-│   ├── UserAuditRecord.cs
-│   └── UserServiceAccountRecord.cs
+├── Extensions
+│   └── ServiceCollectionExtensions.cs
 │
-├── Repositories/
-│   ├── ApplicationUserRepository.cs
-│   ├── UserPasswordHistoryRepository.cs
-│   ├── UserAuditRepository.cs
-│   └── UserServiceAccountRepository.cs
-│
-└── Infrastructure/
-    └── IocStartup.cs
+└── Tests
+    └── Identity
+        ├── IdentityUserAuditInterceptorTests.cs
+        └── IdentityAuditPropertyPolicyTests.cs
 ```
 
-The generated files remain generated. All new application-owned code is kept separate.
+The namespaces below are illustrative; keep your existing project namespace conventions.
 
-## **2. NuGet packages**
+# **2. SQL Server 2019 – database-first script**
 
-Install the following packages into `MyApplication.Data`:
-
-```
-<ItemGroup>
-  <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.0" />
-  <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.0" />
-  <PackageReference Include="Microsoft.AspNetCore.Identity" Version="2.3.1" />
-</ItemGroup>
-```
-
-Use versions aligned with your actual .NET 10 and EF Core installation. In particular, don't downgrade EF Core packages generated by your existing project.
-
-The Identity package is used for Identity interfaces and password hashing contracts. We are not using its standard EF `UserStore` against your arbitrary database-first context.
-
-## **3. Application user record**
-
-Create `Models/ApplicationUserRecord.cs`.
-
-This is an application-owned data-transfer model. It is not an EF entity.
+File: `Database/Scripts/001_CreateIdentityUserAudit.sql`
 
 ```
 
-namespace MyApplication.Data.Models;
+IF OBJECT_ID(N'dbo.IdentityUserAudit', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.IdentityUserAudit
+    (
+        AuditId BIGINT IDENTITY(1,1) NOT NULL,
+
+        UserId NVARCHAR(450) NOT NULL,
+
+        Action NVARCHAR(20) NOT NULL,
+
+        PropertyName NVARCHAR(256) NOT NULL,
+
+        OldValue NVARCHAR(MAX) NULL,
+
+        NewValue NVARCHAR(MAX) NULL,
+
+        ChangedBy NVARCHAR(450) NULL,
+
+        ChangedByName NVARCHAR(256) NULL,
+
+        ChangedAtUtc DATETIME2(7) NOT NULL,
+
+        CorrelationId NVARCHAR(128) NULL,
+
+        CONSTRAINT PK_IdentityUserAudit
+            PRIMARY KEY CLUSTERED (AuditId),
+
+        CONSTRAINT CK_IdentityUserAudit_Action
+            CHECK (Action IN ('INSERT', 'UPDATE', 'DELETE'))
+    );
+END;
+GO
+
+IF NOT EXISTS
+(
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = N'IX_IdentityUserAudit_UserId'
+      AND object_id = OBJECT_ID(N'dbo.IdentityUserAudit')
+)
+BEGIN
+    CREATE INDEX IX_IdentityUserAudit_UserId
+        ON dbo.IdentityUserAudit(UserId);
+END;
+GO
+
+IF NOT EXISTS
+(
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = N'IX_IdentityUserAudit_ChangedAtUtc'
+      AND object_id = OBJECT_ID(N'dbo.IdentityUserAudit')
+)
+BEGIN
+    CREATE INDEX IX_IdentityUserAudit_ChangedAtUtc
+        ON dbo.IdentityUserAudit(ChangedAtUtc);
+END;
+GO
+
+IF NOT EXISTS
+(
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = N'IX_IdentityUserAudit_ChangedBy'
+      AND object_id = OBJECT_ID(N'dbo.IdentityUserAudit')
+)
+BEGIN
+    CREATE INDEX IX_IdentityUserAudit_ChangedBy
+        ON dbo.IdentityUserAudit(ChangedBy);
+END;
+GO
+
+```
+
+No foreign key is deliberately created. Deleting an Identity account must not delete its audit history.
+
+# **3. Domain – audit entity**
+
+File: `Domain/Identity/IdentityUserAudit.cs`
+
+```
+
+namespace YourSolution.Domain.Identity;
 
 /// <summary>
-/// Represents the application user information required by authentication
-/// and authorization services.
+/// Represents an individual change made to an Identity user.
 /// </summary>
-public sealed class ApplicationUserRecord
+public sealed class IdentityUserAudit
 {
     /// <summary>
-    /// Gets or sets the application user identifier.
+    /// Gets or sets the audit record identifier.
     /// </summary>
-    public required string Id { get; set; }
+    public long AuditId { get; set; }
 
     /// <summary>
-    /// Gets or sets the username.
+    /// Gets or sets the affected Identity user identifier.
     /// </summary>
-    public string? UserName { get; set; }
+    public required string UserId { get; set; }
 
     /// <summary>
-    /// Gets or sets the normalized username.
-    /// </summary>
-    public string? NormalizedUserName { get; set; }
-
-    /// <summary>
-    /// Gets or sets the email address.
-    /// </summary>
-    public string? Email { get; set; }
-
-    /// <summary>
-    /// Gets or sets the normalized email address.
-    /// </summary>
-    public string? NormalizedEmail { get; set; }
-
-    /// <summary>
-    /// Gets or sets the password hash.
-    /// </summary>
-    public string? PasswordHash { get; set; }
-
-    /// <summary>
-    /// Gets or sets the security stamp.
-    /// </summary>
-    public string? SecurityStamp { get; set; }
-
-    /// <summary>
-    /// Gets or sets the concurrency stamp.
-    /// </summary>
-    public string? ConcurrencyStamp { get; set; }
-
-    /// <summary>
-    /// Gets or sets the authentication provider.
-    /// Zero represents local authentication and one represents Active Directory.
-    /// </summary>
-    public byte AuthenticationProvider { get; set; }
-
-    /// <summary>
-    /// Gets or sets the Active Directory object identifier.
-    /// </summary>
-    public string? ActiveDirectoryObjectId { get; set; }
-
-    /// <summary>
-    /// Gets or sets the display name.
-    /// </summary>
-    public string? DisplayName { get; set; }
-
-    /// <summary>
-    /// Gets or sets the department.
-    /// </summary>
-    public string? Department { get; set; }
-
-    /// <summary>
-    /// Gets or sets whether the application account is active.
-    /// </summary>
-    public bool IsActive { get; set; }
-}
-
-```
-
-This record deliberately contains only the fields required by this design. Additional existing Identity properties can be added to the adapter when required.
-
-## **4. Authentication provider constants**
-
-Create `Models/AuthenticationProvider.cs`.
-
-```
-
-namespace MyApplication.Data.Models;
-
-/// <summary>
-/// Defines the authentication providers supported by the application.
-/// </summary>
-public enum AuthenticationProvider : byte
-{
-    /// <summary>
-    /// Authentication using the application's local password.
-    /// </summary>
-    Local = 0,
-
-    /// <summary>
-    /// Authentication using Active Directory.
-    /// </summary>
-    ActiveDirectory = 1
-}
-
-```
-
-Use this enum in application logic rather than scattering numeric values throughout the code.
-
-## **5. Repository interfaces**
-
-Create `Interfaces/IApplicationUserStore.cs`.
-
-```
-
-using MyApplication.Data.Models;
-
-namespace MyApplication.Data.Interfaces;
-
-/// <summary>
-/// Defines application user data operations.
-/// </summary>
-public interface IApplicationUserStore
-{
-    /// <summary>
-    /// Finds an application user by username.
-    /// </summary>
-    Task<ApplicationUserRecord?> FindByUserNameAsync(
-        string normalizedUserName,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Finds an application user by identifier.
-    /// </summary>
-    Task<ApplicationUserRecord?> FindByIdAsync(
-        string userId,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Finds an Active Directory user by object identifier.
-    /// </summary>
-    Task<ApplicationUserRecord?> FindByActiveDirectoryObjectIdAsync(
-        string objectId,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Creates an application user.
-    /// </summary>
-    Task CreateAsync(
-        ApplicationUserRecord user,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Updates an application user.
-    /// </summary>
-    Task UpdateAsync(
-        ApplicationUserRecord user,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Updates a user's password hash and security stamp.
-    /// </summary>
-    Task UpdatePasswordAsync(
-        string userId,
-        string passwordHash,
-        string securityStamp,
-        string concurrencyStamp,
-        CancellationToken cancellationToken = default);
-}
-
-```
-
-Create `Interfaces/IUserPasswordHistoryRepository.cs`.
-
-```
-
-using MyApplication.Data.Models;
-
-namespace MyApplication.Data.Interfaces;
-
-/// <summary>
-/// Defines password history operations.
-/// </summary>
-public interface IUserPasswordHistoryRepository
-{
-    /// <summary>
-    /// Gets the most recent password hashes for a user.
-    /// </summary>
-    Task<IReadOnlyList<UserPasswordHistoryRecord>> GetRecentAsync(
-        string userId,
-        int count,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Adds a previous password hash.
-    /// </summary>
-    Task AddAsync(
-        string userId,
-        string passwordHash,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Removes password history records beyond the retention limit.
-    /// </summary>
-    Task RetainLatestAsync(
-        string userId,
-        int count,
-        CancellationToken cancellationToken = default);
-}
-
-```
-
-Create `Interfaces/IUserAuditRepository.cs`.
-
-```
-
-using MyApplication.Data.Models;
-
-namespace MyApplication.Data.Interfaces;
-
-/// <summary>
-/// Defines user audit operations.
-/// </summary>
-public interface IUserAuditRepository
-{
-    /// <summary>
-    /// Writes an audit record.
-    /// </summary>
-    Task AddAsync(
-        UserAuditRecord record,
-        CancellationToken cancellationToken = default);
-}
-
-```
-
-Create `Interfaces/IUserServiceAccountRepository.cs`.
-
-```
-
-using MyApplication.Data.Models;
-
-namespace MyApplication.Data.Interfaces;
-
-/// <summary>
-/// Defines user service-account assignment operations.
-/// </summary>
-public interface IUserServiceAccountRepository
-{
-    /// <summary>
-    /// Gets active service-account assignments for a user and page.
-    /// </summary>
-    Task<IReadOnlyList<UserServiceAccountRecord>> GetActiveAssignmentsAsync(
-        string userId,
-        string? pageKey,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Checks whether a service-account assignment is active for a user
-    /// and the requested page.
-    /// </summary>
-    Task<bool> HasActiveAssignmentAsync(
-        string userId,
-        string serviceAccountId,
-        string? pageKey,
-        CancellationToken cancellationToken = default);
-}
-
-```
-
-## **6. Correct the NuGet package references**
-
-One correction to the package list in the previous section: use the .NET 10 Identity Core package rather than the older `Microsoft.AspNetCore.Identity` 2.3.1 package.
-
-For `MyApplication.Data.csproj`:
-
-```
-<ItemGroup>
-  <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.0" />
-  <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.0" />
-  <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="10.0.0" />
-</ItemGroup>
-```
-
-Keep these versions aligned with the versions used by your solution.
-
-## **7. Additional data models**
-
-Create `Models/UserPasswordHistoryRecord.cs`.
-
-```
-
-namespace MyApplication.Data.Models;
-
-/// <summary>
-/// Represents a previously used password hash.
-/// </summary>
-public sealed class UserPasswordHistoryRecord
-{
-    /// <summary>
-    /// Gets or sets the password history identifier.
-    /// </summary>
-    public long Id { get; set; }
-
-    /// <summary>
-    /// Gets or sets the password hash.
-    /// </summary>
-    public required string PasswordHash { get; set; }
-
-    /// <summary>
-    /// Gets or sets the date and time the password was changed.
-    /// </summary>
-    public DateTime ChangedUtc { get; set; }
-}
-
-```
-
-Create `Models/UserAuditRecord.cs`.
-
-```
-
-namespace MyApplication.Data.Models;
-
-/// <summary>
-/// Represents an application audit event.
-/// </summary>
-public sealed class UserAuditRecord
-{
-    /// <summary>
-    /// Gets or sets the affected user identifier.
-    /// </summary>
-    public string? UserId { get; set; }
-
-    /// <summary>
-    /// Gets or sets the user who performed the action.
-    /// </summary>
-    public string? ChangedByUserId { get; set; }
-
-    /// <summary>
-    /// Gets or sets the service account identifier.
-    /// </summary>
-    public string? ServiceAccountId { get; set; }
-
-    /// <summary>
-    /// Gets or sets the authentication provider.
-    /// </summary>
-    public byte? AuthenticationProvider { get; set; }
-
-    /// <summary>
-    /// Gets or sets the audit action.
+    /// Gets or sets the type of operation performed.
     /// </summary>
     public required string Action { get; set; }
 
     /// <summary>
-    /// Gets or sets the affected property name.
+    /// Gets or sets the name of the modified property.
     /// </summary>
-    public string? PropertyName { get; set; }
+    public required string PropertyName { get; set; }
 
     /// <summary>
-    /// Gets or sets the previous value.
+    /// Gets or sets the original property value.
     /// </summary>
     public string? OldValue { get; set; }
 
     /// <summary>
-    /// Gets or sets the new value.
+    /// Gets or sets the new property value.
     /// </summary>
     public string? NewValue { get; set; }
 
     /// <summary>
-    /// Gets or sets the UTC timestamp.
+    /// Gets or sets the identifier of the person making the change.
     /// </summary>
-    public DateTime ChangedUtc { get; set; }
+    public string? ChangedBy { get; set; }
 
     /// <summary>
-    /// Gets or sets the correlation identifier.
+    /// Gets or sets the display name of the person making the change.
+    /// </summary>
+    public string? ChangedByName { get; set; }
+
+    /// <summary>
+    /// Gets or sets the UTC timestamp of the change.
+    /// </summary>
+    public DateTime ChangedAtUtc { get; set; }
+
+    /// <summary>
+    /// Gets or sets the request correlation identifier.
     /// </summary>
     public string? CorrelationId { get; set; }
 }
 
 ```
 
-Create `Models/UserServiceAccountRecord.cs`.
+# **4. Application – actor abstraction**
+
+File: `Application/Identity/IdentityAuditActor.cs`
 
 ```
 
-namespace MyApplication.Data.Models;
+namespace YourSolution.Application.Identity;
 
 /// <summary>
-/// Represents a user's service-account assignment.
+/// Describes the identity responsible for an audited operation.
 /// </summary>
-public sealed class UserServiceAccountRecord
-{
-    /// <summary>
-    /// Gets or sets the assignment identifier.
-    /// </summary>
-    public long Id { get; set; }
-
-    /// <summary>
-    /// Gets or sets the application user identifier.
-    /// </summary>
-    public required string UserId { get; set; }
-
-    /// <summary>
-    /// Gets or sets the service-account identifier.
-    /// </summary>
-    public required string ServiceAccountId { get; set; }
-
-    /// <summary>
-    /// Gets or sets the optional page key.
-    /// </summary>
-    public string? PageKey { get; set; }
-
-    /// <summary>
-    /// Gets or sets whether this is the default assignment.
-    /// </summary>
-    public bool IsDefault { get; set; }
-
-    /// <summary>
-    /// Gets or sets whether the assignment is active.
-    /// </summary>
-    public bool IsActive { get; set; }
-
-    /// <summary>
-    /// Gets or sets when the assignment was created.
-    /// </summary>
-    public DateTime CreatedUtc { get; set; }
-
-    /// <summary>
-    /// Gets or sets when the assignment was revoked.
-    /// </summary>
-    public DateTime? RevokedUtc { get; set; }
-}
+public sealed record IdentityAuditActor(
+    string? UserId,
+    string? DisplayName,
+    string? CorrelationId);
 
 ```
 
-## **8. Make password changes atomic**
-
-There is an important issue with the original password-history interface: adding a history record and changing `AspNetUsers.PasswordHash` as separate operations could leave inconsistent data if one operation succeeds and the other fails.
-
-Replace `Interfaces/IUserPasswordHistoryRepository.cs` with this version.
+File: `Application/Identity/IIdentityAuditActor.cs`
 
 ```
 
-using MyApplication.Data.Models;
-
-namespace MyApplication.Data.Interfaces;
+namespace YourSolution.Application.Identity;
 
 /// <summary>
-/// Defines password history and atomic password change operations.
+/// Resolves the identity responsible for an audited operation.
 /// </summary>
-public interface IUserPasswordHistoryRepository
+public interface IIdentityAuditActor
 {
     /// <summary>
-    /// Gets the most recent password history records for a user.
+    /// Gets the current audit actor synchronously.
     /// </summary>
-    Task<IReadOnlyList<UserPasswordHistoryRecord>> GetRecentAsync(
-        string userId,
-        int count,
-        CancellationToken cancellationToken = default);
+    IdentityAuditActor GetCurrentActor();
 
     /// <summary>
-    /// Atomically stores the previous password hash, updates the current
-    /// password hash and retains the configured number of history records.
+    /// Gets the current audit actor asynchronously.
     /// </summary>
-    Task ChangePasswordAsync(
-        string userId,
-        string expectedConcurrencyStamp,
-        string newPasswordHash,
-        string newSecurityStamp,
-        string newConcurrencyStamp,
-        int historyCount,
+    Task<IdentityAuditActor> GetCurrentActorAsync(
         CancellationToken cancellationToken = default);
 }
 
 ```
 
-The implementation must use one SQL transaction with appropriate concurrency protection. It should:
+# **5. Infrastructure – property auditing policy**
 
-1. Lock and retrieve the current user password and concurrency stamp.
-2. Verify the expected concurrency stamp.
-3. Insert the existing password hash into `UserPasswordHistory`.
-4. Update `AspNetUsers.PasswordHash`, `SecurityStamp` and `ConcurrencyStamp`.
-5. Retain only the configured number of historical hashes.
-6. Commit the transaction.
+I recommend keeping sensitive-property handling separate from the interceptor.
 
-The service that calls this method must perform the password-history comparison using `IPasswordHasher<TUser>` before invoking the change operation.
+This makes it easier to extend `ApplicationUser` later without embedding security decisions throughout the persistence logic.
 
-This prevents two concurrent password changes from silently overwriting one another.
-
-## **9. Identity integration boundary**
-
-The application needs to use ASP.NET Core's password hasher without forcing your generated entity to inherit from `IdentityUser`.
-
-The Identity interfaces and password hasher will be used by application services. The generated entity remains a normal EF Core entity.
-
-For example, the password hasher is registered using the Identity Core package:
-
-```
-services.AddScoped<IPasswordHasher<ApplicationUserRecord>,
-    PasswordHasher<ApplicationUserRecord>>();
-```
-
-The authentication service will call:
-
-```
-var verificationResult = passwordHasher.VerifyHashedPassword(
-    user,
-    user.PasswordHash!,
-    proposedPassword);
-```
-
-The result must be checked against both:
-
-- The current password hash.
-- The most recent 19 historical hashes.
-
-Never compare newly generated hashes directly to determine whether two passwords are the same. Password hashing algorithms use salts, so equivalent passwords can produce different hash strings.
-
-## **10. Repository implementation strategy**
-
-Because your `ExistingDatabaseContext` and generated `AspNetUser` property definitions are not available to this implementation, I am deliberately separating the repository contracts from the generated EF model.
-
-For this application, the repositories can use the existing `DbContext.Database.GetDbConnection()` API and parameterised SQL commands against the known database tables.
-
-This has three advantages:
-
-- It does not require assumptions about generated `DbSet` property names.
-- It does not require modifying generated POCOs.
-- It allows the repositories to use the existing database context.
-
-The implementations will use the existing `DbContext` instance supplied by dependency injection.
-
-There is one limitation: the service-account repository can validate assignment records, but the check that the underlying service account is active must use your actual generated `ServiceAccount` model and its real active-status property. That integration belongs in the next API/service layer.
-
-## **11. Dependency injection**
-
-Create `Infrastructure/IocStartup.cs`.
-
-This registers the repository contracts while allowing your existing application to register its generated context normally.
+File: `Infrastructure/Identity/IdentityAuditPropertyPolicy.cs`
 
 ```
 
-using Microsoft.Extensions.DependencyInjection;
-using MyApplication.Data.Interfaces;
-using MyApplication.Data.Repositories;
-
-namespace MyApplication.Data.Infrastructure;
+namespace YourSolution.Infrastructure.Identity;
 
 /// <summary>
-/// Provides dependency injection registration for the Data project.
+/// Determines which ApplicationUser properties may be audited.
 /// </summary>
-public static class IocStartup
+public sealed class IdentityAuditPropertyPolicy
+{
+    private static readonly HashSet<string> ExcludedProperties =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Id",
+            "PasswordHash",
+            "SecurityStamp",
+            "ConcurrencyStamp",
+            "AuthenticatorKey",
+            "RecoveryCodes",
+            "TwoFactorRecoveryCodes",
+            "AccessToken",
+            "RefreshToken",
+            "ClientSecret"
+        };
+
+    /// <summary>
+    /// Determines whether a property is eligible for auditing.
+    /// </summary>
+    public bool ShouldAudit(string propertyName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+
+        return !ExcludedProperties.Contains(propertyName);
+    }
+}
+
+```
+
+This is an explicit deny-list for sensitive values. When you add additional confidential properties to `ApplicationUser`, add them here.
+
+# **6. Infrastructure – audit actor implementation**
+
+File: `Infrastructure/Identity/HttpBlazorIdentityAuditActor.cs`
+
+This supports the two execution environments:
+
+- Standard ASP.NET Core HTTP requests.
+- Interactive Blazor authentication through `AuthenticationStateProvider`.
+
+For synchronous saves, it uses the HTTP principal only. If a Blazor circuit has no HTTP context, the actor is recorded as an unattributed system operation rather than incorrectly attributing it to somebody else.
+
+For asynchronous saves, it can resolve the Blazor circuit principal.
+
+```
+
+using System.Diagnostics;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Http;
+using YourSolution.Application.Identity;
+
+namespace YourSolution.Infrastructure.Identity;
+
+/// <summary>
+/// Resolves audit actors from ASP.NET Core and Blazor authentication.
+/// </summary>
+public sealed class HttpBlazorIdentityAuditActor(
+    IHttpContextAccessor httpContextAccessor,
+    AuthenticationStateProvider authenticationStateProvider)
+    : IIdentityAuditActor
+{
+    /// <inheritdoc />
+    public IdentityAuditActor GetCurrentActor()
+    {
+        var principal = httpContextAccessor.HttpContext?.User;
+
+        return CreateActor(principal);
+    }
+
+    /// <inheritdoc />
+    public async Task<IdentityAuditActor> GetCurrentActorAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var principal = httpContextAccessor.HttpContext?.User;
+
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            var authenticationState =
+                await authenticationStateProvider
+                    .GetAuthenticationStateAsync();
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            principal = authenticationState.User;
+        }
+
+        return CreateActor(principal);
+    }
+
+    private IdentityAuditActor CreateActor(
+        ClaimsPrincipal? principal)
+    {
+        var httpContext = httpContextAccessor.HttpContext;
+
+        var correlationId =
+            httpContext?.TraceIdentifier
+            ?? Activity.Current?.Id;
+
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            return new IdentityAuditActor(
+                null,
+                "Unattributed System Operation",
+                correlationId);
+        }
+
+        var userId = principal.FindFirstValue(
+            ClaimTypes.NameIdentifier);
+
+        var displayName =
+            principal.FindFirstValue(ClaimTypes.Name)
+            ?? principal.Identity?.Name
+            ?? userId;
+
+        return new IdentityAuditActor(
+            userId,
+            displayName,
+            correlationId);
+    }
+}
+
+```
+
+**Important:** Background services should use a dedicated system actor identity, not an interactive Blazor `AuthenticationStateProvider`. The unattributed fallback above is intentional. If you need to identify individual background jobs, introduce an explicit job actor rather than relying on ambient authentication.
+
+# **7. Infrastructure – ApplicationDbContext**
+
+File: `Infrastructure/Data/ApplicationDbContext.cs`
+
+This is the relevant addition to your existing context.
+
+```
+
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+using YourSolution.Domain.Identity;
+using YourSolution.Domain.Users;
+
+namespace YourSolution.Infrastructure.Data;
+
+/// <summary>
+/// Provides database access for application and Identity data.
+/// </summary>
+public class ApplicationDbContext(
+    DbContextOptions<ApplicationDbContext> options)
+    : IdentityDbContext<ApplicationUser>(options)
 {
     /// <summary>
-    /// Registers application data services.
-    /// The application's existing database context must already be registered.
+    /// Gets the Identity user audit records.
     /// </summary>
-    public static IServiceCollection AddApplicationData(
-        this IServiceCollection services)
+    public DbSet<IdentityUserAudit> IdentityUserAudits =>
+        Set<IdentityUserAudit>();
+
+    /// <inheritdoc />
+    protected override void OnModelCreating(ModelBuilder builder)
     {
-        services.AddScoped<IApplicationUserStore,
-            ApplicationUserRepository>();
+        base.OnModelCreating(builder);
 
-        services.AddScoped<IUserPasswordHistoryRepository,
-            UserPasswordHistoryRepository>();
+        builder.Entity<IdentityUserAudit>(entity =>
+        {
+            entity.ToTable("IdentityUserAudit", "dbo");
 
-        services.AddScoped<IUserAuditRepository,
-            UserAuditRepository>();
+            entity.HasKey(audit => audit.AuditId);
 
-        services.AddScoped<IUserServiceAccountRepository,
-            UserServiceAccountRepository>();
+            entity.Property(audit => audit.AuditId)
+                .ValueGeneratedOnAdd();
+
+            entity.Property(audit => audit.UserId)
+                .HasMaxLength(450)
+                .IsRequired();
+
+            entity.Property(audit => audit.Action)
+                .HasMaxLength(20)
+                .IsRequired();
+
+            entity.Property(audit => audit.PropertyName)
+                .HasMaxLength(256)
+                .IsRequired();
+
+            entity.Property(audit => audit.OldValue)
+                .HasColumnType("nvarchar(max)");
+
+            entity.Property(audit => audit.NewValue)
+                .HasColumnType("nvarchar(max)");
+
+            entity.Property(audit => audit.ChangedBy)
+                .HasMaxLength(450);
+
+            entity.Property(audit => audit.ChangedByName)
+                .HasMaxLength(256);
+
+            entity.Property(audit => audit.ChangedAtUtc)
+                .HasColumnType("datetime2(7)")
+                .IsRequired();
+
+            entity.Property(audit => audit.CorrelationId)
+                .HasMaxLength(128);
+        });
+    }
+}
+
+```
+
+If your existing context already has substantial `OnModelCreating` configuration, retain it and add only the `IdentityUserAudit` entity configuration.
+
+No migrations are required.
+
+# **8. Infrastructure – EF Core SaveChangesInterceptor**
+
+File: `Infrastructure/Identity/IdentityUserAuditInterceptor.cs`
+
+This is the main auditing component.
+
+```
+
+using System.Globalization;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using YourSolution.Application.Identity;
+using YourSolution.Domain.Identity;
+using YourSolution.Domain.Users;
+
+namespace YourSolution.Infrastructure.Identity;
+
+/// <summary>
+/// Intercepts EF Core persistence operations and audits ApplicationUser changes.
+/// </summary>
+public sealed class IdentityUserAuditInterceptor(
+    IIdentityAuditActor auditActor,
+    IdentityAuditPropertyPolicy propertyPolicy,
+    TimeProvider timeProvider)
+    : SaveChangesInterceptor
+{
+    /// <inheritdoc />
+    public override InterceptionResult<int> SavingChanges(
+        DbContextEventData eventData,
+        InterceptionResult<int> result)
+    {
+        if (eventData.Context is DbContext context)
+        {
+            AddAuditEntries(
+                context,
+                auditActor.GetCurrentActor());
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc />
+    public override async ValueTask<InterceptionResult<int>>
+        SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+    {
+        if (eventData.Context is DbContext context)
+        {
+            var actor = await auditActor.GetCurrentActorAsync(
+                cancellationToken);
+
+            AddAuditEntries(context, actor);
+        }
+
+        return result;
+    }
+
+    private void AddAuditEntries(
+        DbContext context,
+        IdentityAuditActor actor)
+    {
+        context.ChangeTracker.DetectChanges();
+
+        var userEntries = context.ChangeTracker
+            .Entries<ApplicationUser>()
+            .Where(entry =>
+                entry.State is EntityState.Added
+                    or EntityState.Modified
+                    or EntityState.Deleted)
+            .ToList();
+
+        if (userEntries.Count == 0)
+        {
+            return;
+        }
+
+        var timestamp = timeProvider.GetUtcNow().UtcDateTime;
+
+        var auditEntries = new List<IdentityUserAudit>();
+
+        foreach (var entry in userEntries)
+        {
+            auditEntries.AddRange(
+                CreateAuditEntries(
+                    entry,
+                    actor,
+                    timestamp));
+        }
+
+        if (auditEntries.Count > 0)
+        {
+            context.Set<IdentityUserAudit>()
+                .AddRange(auditEntries);
+        }
+    }
+
+    private IEnumerable<IdentityUserAudit> CreateAuditEntries(
+        EntityEntry<ApplicationUser> entry,
+        IdentityAuditActor actor,
+        DateTime timestamp)
+    {
+        var action = GetAction(entry.State);
+
+        foreach (var property in entry.Properties)
+        {
+            var propertyName = property.Metadata.Name;
+
+            if (!propertyPolicy.ShouldAudit(propertyName))
+            {
+                continue;
+            }
+
+            if (!ShouldAuditProperty(entry, property))
+            {
+                continue;
+            }
+
+            yield return new IdentityUserAudit
+            {
+                UserId = entry.Entity.Id,
+                Action = action,
+                PropertyName = propertyName,
+                OldValue = GetOldValue(entry, property),
+                NewValue = GetNewValue(entry, property),
+                ChangedBy = actor.UserId,
+                ChangedByName = actor.DisplayName,
+                ChangedAtUtc = timestamp,
+                CorrelationId = actor.CorrelationId
+            };
+        }
+    }
+
+    private static string GetAction(EntityState state)
+    {
+        return state switch
+        {
+            EntityState.Added => "INSERT",
+            EntityState.Modified => "UPDATE",
+            EntityState.Deleted => "DELETE",
+
+            _ => throw new InvalidOperationException(
+                $"Unsupported Identity user state: {state}")
+        };
+    }
+
+    private static bool ShouldAuditProperty(
+        EntityEntry<ApplicationUser> entry,
+        PropertyEntry property)
+    {
+        if (entry.State == EntityState.Added)
+        {
+            return property.CurrentValue is not null;
+        }
+
+        if (entry.State == EntityState.Deleted)
+        {
+            return property.OriginalValue is not null;
+        }
+
+        if (entry.State == EntityState.Modified)
+        {
+            return property.IsModified
+                && !Equals(
+                    property.OriginalValue,
+                    property.CurrentValue);
+        }
+
+        return false;
+    }
+
+    private static string? GetOldValue(
+        EntityEntry<ApplicationUser> entry,
+        PropertyEntry property)
+    {
+        if (entry.State == EntityState.Added)
+        {
+            return null;
+        }
+
+        return FormatValue(property.OriginalValue);
+    }
+
+    private static string? GetNewValue(
+        EntityEntry<ApplicationUser> entry,
+        PropertyEntry property)
+    {
+        if (entry.State == EntityState.Deleted)
+        {
+            return null;
+        }
+
+        return FormatValue(property.CurrentValue);
+    }
+
+    private static string? FormatValue(object? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        if (value is byte[])
+        {
+            return "[BINARY VALUE OMITTED]";
+        }
+
+        if (value is DateTime dateTime)
+        {
+            return dateTime.ToString(
+                "O",
+                CultureInfo.InvariantCulture);
+        }
+
+        if (value is DateTimeOffset dateTimeOffset)
+        {
+            return dateTimeOffset.ToString(
+                "O",
+                CultureInfo.InvariantCulture);
+        }
+
+        if (value is bool boolean)
+        {
+            return boolean.ToString();
+        }
+
+        if (value is IFormattable formattable)
+        {
+            return formattable.ToString(
+                null,
+                CultureInfo.InvariantCulture);
+        }
+
+        return value.ToString();
+    }
+}
+
+```
+
+### **How this works**
+
+For example, if your application executes:
+
+```
+var user = await userManager.FindByIdAsync(userId);
+
+user.Email = "new@company.com";
+user.PhoneNumber = "0123456789";
+
+await userManager.UpdateAsync(user);
+```
+
+The Identity EF store updates `ApplicationUser` through `ApplicationDbContext`.
+
+The interceptor sees the two modified properties and adds two audit records before EF Core executes the save.
+
+The resulting records look like this:
+
+| Property    | Old value        | New value        |
+| ----------- | ---------------- | ---------------- |
+| Email       | old\@company.com | new\@company.com |
+| PhoneNumber | NULL             | 0123456789       |
+
+The audit records and user changes are persisted together.
+
+**Important:** `UserManager.UpdateAsync` can also update the concurrency stamp and other Identity properties. Those are deliberately excluded.
+
+Also, this interceptor only captures changes made through the tracked EF Core entity pipeline. Bulk updates and direct SQL need separate auditing.
+
+# **9. Single IServiceCollection extension**
+
+This is where all the registrations belong in your project.
+
+File: `Extensions/ServiceCollectionExtensions.cs`
+
+The following example assumes your existing `ApplicationDbContext` is registered here too.
+
+```
+
+using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using YourSolution.Application.Identity;
+using YourSolution.Infrastructure.Data;
+using YourSolution.Infrastructure.Identity;
+
+namespace YourSolution.Extensions;
+
+/// <summary>
+/// Provides central application dependency injection registrations.
+/// </summary>
+public static class ServiceCollectionExtensions
+{
+    /// <summary>
+    /// Registers application services and infrastructure dependencies.
+    /// </summary>
+    public static IServiceCollection AddApplicationServices(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        RegisterIdentityAuditing(services);
+
+        RegisterDatabase(services, configuration);
+
+        // Retain all your existing application registrations here.
 
         return services;
     }
+
+    private static void RegisterIdentityAuditing(
+        IServiceCollection services)
+    {
+        services.AddHttpContextAccessor();
+
+        services.TryAddSingleton<TimeProvider>(
+            TimeProvider.System);
+
+        services.AddScoped<
+            IIdentityAuditActor,
+            HttpBlazorIdentityAuditActor>();
+
+        services.AddScoped<IdentityAuditPropertyPolicy>();
+
+        services.AddScoped<IdentityUserAuditInterceptor>();
+    }
+
+    private static void RegisterDatabase(
+        IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var connectionString =
+            configuration.GetConnectionString("DefaultConnection");
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            connectionString);
+
+        services.AddDbContext<ApplicationDbContext>(
+            (serviceProvider, options) =>
+            {
+                options.UseSqlServer(connectionString);
+
+                options.AddInterceptors(
+                    serviceProvider.GetRequiredService<
+                        IdentityUserAuditInterceptor>());
+            });
+    }
 }
 
 ```
 
-Call it from the API's `Program.cs` after registering the existing database context:
+**Registration warning:** If your existing extension already registers `ApplicationDbContext`, keep that registration and merge the `AddInterceptors` call into it. Do not register the same context twice.
+
+Your `Program.cs` remains:
 
 ```
-builder.Services.AddApplicationData();
+builder.Services.AddApplicationServices(
+    builder.Configuration);
 ```
 
-The repository implementations should receive the existing context through `DbContext` injection. If necessary, register the existing context as its base type:
+Keep your existing Identity and hybrid authentication registrations. The auditing registration does not replace them.
+
+# **10. Automated tests**
+
+I would keep the tests against a real EF Core relational provider rather than mocking `DbContext` or the change tracker.
+
+For the fast test suite, SQLite in-memory is suitable. SQL Server integration tests should additionally verify SQL Server-specific transaction and schema behaviour.
+
+### **Test project packages**
 
 ```
-builder.Services.AddScoped<DbContext>(serviceProvider =>
-    serviceProvider.GetRequiredService<ExistingDatabaseContext>());
+<ItemGroup>
+  <PackageReference Include="Microsoft.NET.Test.Sdk"
+                    Version="18.0.1" />
+
+  <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite"
+                    Version="10.0.0" />
+
+  <PackageReference Include="xunit.v3"
+                    Version="3.2.2" />
+
+  <PackageReference Include="Shouldly"
+                    Version="4.3.0" />
+</ItemGroup>
 ```
 
-Use the actual namespace of your generated context in this registration.
+Use versions aligned with the actual .NET 10 servicing version and your repository's package-management policy.
 
-
-
-Perfect. I'll use:
-
-- Context: `FooBarDbContext`
-- User entity: `AspNetUser`
-- User DbSet: `AspNetUsers`
-
-I'll switch the repositories to EF Core LINQ and entity operations. The generated database-first files remain untouched.
-
-One important distinction: EF Core's normal LINQ and transaction APIs are sufficient for most of these repositories. For password changes, I'll use a transaction and concurrency-stamp check; a database-specific row lock may still be necessary to make the check-and-update safe under simultaneous requests. I won't silently claim ordinary transaction isolation guarantees that protection.
-
-Now that we have the context and user entity names, here is the EF Core version. I'll use the generated context directly:
+### **IdentityUserAuditInterceptorTests.cs**
 
 ```
-FooBarDbContext
-```
 
-For the three additional tables, I'll use `FooBarDbContext.Set<TEntity>()`. That avoids depending on the generated `DbSet` property names, while still using strongly typed EF Core entities.
-
-The code assumes EF Core Power Tools generated these entity types in `MyApplication.Data.Entities`:
-
-- `UserPasswordHistory`
-- `UserAuditLog`
-- `UserServiceAccount`
-
-It also assumes the additional columns were added to `AspNetUser` as previously specified.
-
-## **1.&#x20;**`ApplicationUserRepository.cs`
-
-```
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Shouldly;
+using Xunit;
+using YourSolution.Application.Identity;
+using YourSolution.Domain.Users;
+using YourSolution.Infrastructure.Data;
+using YourSolution.Infrastructure.Identity;
 
-using MyApplication.Data.Contexts;
-using MyApplication.Data.Entities;
-using MyApplication.Data.Interfaces;
-using MyApplication.Data.Models;
-
-namespace MyApplication.Data.Repositories;
+namespace YourSolution.Tests.Identity;
 
 /// <summary>
-/// Provides database access for application users.
+/// Tests Identity user auditing through EF Core.
 /// </summary>
-public sealed class ApplicationUserRepository : IApplicationUserStore
+public sealed class IdentityUserAuditInterceptorTests
 {
-    private readonly FooBarDbContext _context;
-
-    /// <summary>
-    /// Initialises a new instance of the <see cref="ApplicationUserRepository"/> class.
-    /// </summary>
-    public ApplicationUserRepository(FooBarDbContext context)
+    [Fact]
+    public async Task SaveChangesAsync_WhenEmailChanges_ShouldCreateAuditRecord()
     {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
-    }
+        // Arrange
+        var timestamp = new DateTimeOffset(
+            2026, 11, 23, 13, 0, 0, TimeSpan.Zero);
 
-    /// <inheritdoc />
-    public async Task<ApplicationUserRecord?> FindByUserNameAsync(
-        string normalizedUserName,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(normalizedUserName);
+        await using var connection =
+            new SqliteConnection("Data Source=:memory:");
 
-        return await _context.AspNetUsers
-            .AsNoTracking()
-            .Where(user => user.NormalizedUserName == normalizedUserName)
-            .Select(user => new ApplicationUserRecord
-            {
-                Id = user.Id,
-                UserName = user.UserName,
-                NormalizedUserName = user.NormalizedUserName,
-                Email = user.Email,
-                NormalizedEmail = user.NormalizedEmail,
-                PasswordHash = user.PasswordHash,
-                SecurityStamp = user.SecurityStamp,
-                ConcurrencyStamp = user.ConcurrencyStamp,
-                AuthenticationProvider = user.AuthenticationProvider,
-                ActiveDirectoryObjectId = user.ActiveDirectoryObjectId,
-                DisplayName = user.DisplayName,
-                Department = user.Department,
-                IsActive = user.IsActive
-            })
-            .SingleOrDefaultAsync(cancellationToken);
-    }
+        await connection.OpenAsync();
 
-    /// <inheritdoc />
-    public async Task<ApplicationUserRecord?> FindByIdAsync(
-        string userId,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+        var interceptor = CreateInterceptor(timestamp);
 
-        return await _context.AspNetUsers
-            .AsNoTracking()
-            .Where(user => user.Id == userId)
-            .Select(user => new ApplicationUserRecord
-            {
-                Id = user.Id,
-                UserName = user.UserName,
-                NormalizedUserName = user.NormalizedUserName,
-                Email = user.Email,
-                NormalizedEmail = user.NormalizedEmail,
-                PasswordHash = user.PasswordHash,
-                SecurityStamp = user.SecurityStamp,
-                ConcurrencyStamp = user.ConcurrencyStamp,
-                AuthenticationProvider = user.AuthenticationProvider,
-                ActiveDirectoryObjectId = user.ActiveDirectoryObjectId,
-                DisplayName = user.DisplayName,
-                Department = user.Department,
-                IsActive = user.IsActive
-            })
-            .SingleOrDefaultAsync(cancellationToken);
-    }
+        var options = CreateOptions(
+            connection,
+            interceptor);
 
-    /// <inheritdoc />
-    public async Task<ApplicationUserRecord?> FindByActiveDirectoryObjectIdAsync(
-        string activeDirectoryObjectId,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(activeDirectoryObjectId);
+        await using var context =
+            new ApplicationDbContext(options);
 
-        return await _context.AspNetUsers
-            .AsNoTracking()
-            .Where(user =>
-                user.ActiveDirectoryObjectId == activeDirectoryObjectId &&
-                user.AuthenticationProvider == (byte)AuthenticationProvider.ActiveDirectory)
-            .Select(user => new ApplicationUserRecord
-            {
-                Id = user.Id,
-                UserName = user.UserName,
-                NormalizedUserName = user.NormalizedUserName,
-                Email = user.Email,
-                NormalizedEmail = user.NormalizedEmail,
-                PasswordHash = user.PasswordHash,
-                SecurityStamp = user.SecurityStamp,
-                ConcurrencyStamp = user.ConcurrencyStamp,
-                AuthenticationProvider = user.AuthenticationProvider,
-                ActiveDirectoryObjectId = user.ActiveDirectoryObjectId,
-                DisplayName = user.DisplayName,
-                Department = user.Department,
-                IsActive = user.IsActive
-            })
-            .SingleOrDefaultAsync(cancellationToken);
-    }
+        await context.Database.EnsureCreatedAsync();
 
-    /// <inheritdoc />
-    public async Task CreateAsync(
-        ApplicationUserRecord user,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(user);
-        ArgumentException.ThrowIfNullOrWhiteSpace(user.Id);
-
-        AspNetUser entity = new()
+        var user = new ApplicationUser
         {
-            Id = user.Id,
-            UserName = user.UserName,
-            NormalizedUserName = user.NormalizedUserName,
-            Email = user.Email,
-            NormalizedEmail = user.NormalizedEmail,
-            EmailConfirmed = false,
-            PasswordHash = user.PasswordHash,
-            SecurityStamp = user.SecurityStamp,
-            ConcurrencyStamp = user.ConcurrencyStamp,
-            PhoneNumber = null,
-            PhoneNumberConfirmed = false,
-            TwoFactorEnabled = false,
-            LockoutEnd = null,
-            LockoutEnabled = false,
-            AccessFailedCount = 0,
-            AuthenticationProvider = user.AuthenticationProvider,
-            ActiveDirectoryObjectId = user.ActiveDirectoryObjectId,
-            DisplayName = user.DisplayName,
-            Department = user.Department,
-            IsActive = user.IsActive
+            UserName = "john.smith",
+            Email = "old@company.com",
+            NormalizedEmail = "OLD@COMPANY.COM"
         };
 
-        await _context.AspNetUsers.AddAsync(entity, cancellationToken);
-        await _context.SaveChangesAsync(cancellationToken);
+        // Act: insert user
+        context.Users.Add(user);
+
+        await context.SaveChangesAsync();
+
+        // Act: update user
+        user.Email = "new@company.com";
+        user.NormalizedEmail = "NEW@COMPANY.COM";
+
+        await context.SaveChangesAsync();
+
+        // Assert
+        var audit = await context.IdentityUserAudits
+            .SingleAsync(record =>
+                record.UserId == user.Id &&
+                record.PropertyName == "Email");
+
+        audit.Action.ShouldBe("UPDATE");
+        audit.OldValue.ShouldBe("old@company.com");
+        audit.NewValue.ShouldBe("new@company.com");
+        audit.ChangedBy.ShouldBe("admin-123");
+        audit.ChangedByName.ShouldBe("Administrator");
+        audit.CorrelationId.ShouldBe("correlation-123");
+        audit.ChangedAtUtc.ShouldBe(timestamp.UtcDateTime);
     }
 
-    /// <inheritdoc />
-    public async Task<bool> UpdateAsync(
-        ApplicationUserRecord user,
-        string expectedConcurrencyStamp,
-        CancellationToken cancellationToken = default)
+    [Fact]
+    public async Task SaveChangesAsync_WhenUserIsCreated_ShouldCreateInsertAudits()
     {
-        ArgumentNullException.ThrowIfNull(user);
-        ArgumentException.ThrowIfNullOrWhiteSpace(user.Id);
-        ArgumentException.ThrowIfNullOrWhiteSpace(expectedConcurrencyStamp);
+        // Arrange
+        await using var connection =
+            new SqliteConnection("Data Source=:memory:");
 
-        int affectedRows = await _context.AspNetUsers
-            .Where(existing =>
-                existing.Id == user.Id &&
-                existing.ConcurrencyStamp == expectedConcurrencyStamp)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(existing => existing.UserName, user.UserName)
-                    .SetProperty(existing => existing.NormalizedUserName, user.NormalizedUserName)
-                    .SetProperty(existing => existing.Email, user.Email)
-                    .SetProperty(existing => existing.NormalizedEmail, user.NormalizedEmail)
-                    .SetProperty(existing => existing.AuthenticationProvider, user.AuthenticationProvider)
-                    .SetProperty(existing => existing.ActiveDirectoryObjectId, user.ActiveDirectoryObjectId)
-                    .SetProperty(existing => existing.DisplayName, user.DisplayName)
-                    .SetProperty(existing => existing.Department, user.Department)
-                    .SetProperty(existing => existing.IsActive, user.IsActive)
-                    .SetProperty(existing => existing.ConcurrencyStamp, user.ConcurrencyStamp),
-                cancellationToken);
+        await connection.OpenAsync();
 
-        return affectedRows == 1;
-    }
+        var options = CreateOptions(
+            connection,
+            CreateInterceptor(TimeProvider.System.GetUtcNow()));
 
-    /// <inheritdoc />
-    public async Task<bool> UpdatePasswordAsync(
-        string userId,
-        string expectedConcurrencyStamp,
-        string newPasswordHash,
-        string newSecurityStamp,
-        string newConcurrencyStamp,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(expectedConcurrencyStamp);
-        ArgumentException.ThrowIfNullOrWhiteSpace(newPasswordHash);
-        ArgumentException.ThrowIfNullOrWhiteSpace(newSecurityStamp);
-        ArgumentException.ThrowIfNullOrWhiteSpace(newConcurrencyStamp);
+        await using var context =
+            new ApplicationDbContext(options);
 
-        int affectedRows = await _context.AspNetUsers
-            .Where(user =>
-                user.Id == userId &&
-                user.ConcurrencyStamp == expectedConcurrencyStamp &&
-                user.AuthenticationProvider == (byte)AuthenticationProvider.Local &&
-                user.IsActive)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(user => user.PasswordHash, newPasswordHash)
-                    .SetProperty(user => user.SecurityStamp, newSecurityStamp)
-                    .SetProperty(user => user.ConcurrencyStamp, newConcurrencyStamp),
-                cancellationToken);
+        await context.Database.EnsureCreatedAsync();
 
-        return affectedRows == 1;
-    }
-}
-```
-
-## **2.&#x20;**`UserPasswordHistoryRepository.cs`
-
-This uses an EF Core transaction at `Serializable` isolation. The user is read and updated inside the same transaction, and the previous hash is retained before the new hash is saved.
-
-```
-using System.Data;
-
-using Microsoft.EntityFrameworkCore;
-
-using MyApplication.Data.Contexts;
-using MyApplication.Data.Entities;
-using MyApplication.Data.Interfaces;
-using MyApplication.Data.Models;
-
-namespace MyApplication.Data.Repositories;
-
-/// <summary>
-/// Provides access to local user password history.
-/// </summary>
-public sealed class UserPasswordHistoryRepository : IUserPasswordHistoryRepository
-{
-    private readonly FooBarDbContext _context;
-
-    /// <summary>
-    /// Initialises a new instance of the <see cref="UserPasswordHistoryRepository"/> class.
-    /// </summary>
-    public UserPasswordHistoryRepository(FooBarDbContext context)
-    {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
-    }
-
-    /// <inheritdoc />
-    public async Task<IReadOnlyList<UserPasswordHistoryRecord>> GetRecentAsync(
-        string userId,
-        int count,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
-
-        if (count < 1)
+        var user = new ApplicationUser
         {
-            return [];
-        }
-
-        return await _context.Set<UserPasswordHistory>()
-            .AsNoTracking()
-            .Where(history => history.UserId == userId)
-            .OrderByDescending(history => history.ChangedUtc)
-            .ThenByDescending(history => history.Id)
-            .Take(count)
-            .Select(history => new UserPasswordHistoryRecord
-            {
-                Id = history.Id,
-                PasswordHash = history.PasswordHash,
-                ChangedUtc = history.ChangedUtc
-            })
-            .ToListAsync(cancellationToken);
-    }
-
-    /// <inheritdoc />
-    public async Task ChangePasswordAsync(
-        string userId,
-        string expectedConcurrencyStamp,
-        string newPasswordHash,
-        string newSecurityStamp,
-        string newConcurrencyStamp,
-        int historyCount,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(expectedConcurrencyStamp);
-        ArgumentException.ThrowIfNullOrWhiteSpace(newPasswordHash);
-        ArgumentException.ThrowIfNullOrWhiteSpace(newSecurityStamp);
-        ArgumentException.ThrowIfNullOrWhiteSpace(newConcurrencyStamp);
-
-        if (historyCount < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(historyCount));
-        }
-
-        await using var transaction = await _context.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable,
-            cancellationToken);
-
-        try
-        {
-            AspNetUser? user = await _context.AspNetUsers
-                .SingleOrDefaultAsync(
-                    candidate =>
-                        candidate.Id == userId &&
-                        candidate.AuthenticationProvider == (byte)AuthenticationProvider.Local &&
-                        candidate.IsActive,
-                    cancellationToken);
-
-            if (user is null ||
-                user.ConcurrencyStamp != expectedConcurrencyStamp)
-            {
-                throw new InvalidOperationException(
-                    "The password could not be changed because the account is unavailable or has been modified.");
-            }
-
-            if (!string.IsNullOrWhiteSpace(user.PasswordHash))
-            {
-                UserPasswordHistory history = new()
-                {
-                    UserId = user.Id,
-                    PasswordHash = user.PasswordHash,
-                    ChangedUtc = DateTime.UtcNow
-                };
-
-                await _context.Set<UserPasswordHistory>()
-                    .AddAsync(history, cancellationToken);
-            }
-
-            user.PasswordHash = newPasswordHash;
-            user.SecurityStamp = newSecurityStamp;
-            user.ConcurrencyStamp = newConcurrencyStamp;
-
-            await _context.SaveChangesAsync(cancellationToken);
-
-            List<UserPasswordHistory> historyToRemove = await _context
-                .Set<UserPasswordHistory>()
-                .Where(history => history.UserId == userId)
-                .OrderByDescending(history => history.ChangedUtc)
-                .ThenByDescending(history => history.Id)
-                .Skip(historyCount)
-                .ToListAsync(cancellationToken);
-
-            if (historyToRemove.Count > 0)
-            {
-                _context.Set<UserPasswordHistory>().RemoveRange(historyToRemove);
-                await _context.SaveChangesAsync(cancellationToken);
-            }
-
-            await transaction.CommitAsync(cancellationToken);
-        }
-        catch
-        {
-            await transaction.RollbackAsync(CancellationToken.None);
-            throw;
-        }
-    }
-}
-```
-
-For this repository, the API should treat a concurrency failure as a rejected password change and ask the user to retry. A SQL Server deadlock or serialization failure should also be handled as a transient failure, with a bounded retry policy if appropriate.
-
-## **3.&#x20;**`UserAuditRepository.cs`
-
-```
-using Microsoft.EntityFrameworkCore;
-
-using MyApplication.Data.Contexts;
-using MyApplication.Data.Entities;
-using MyApplication.Data.Interfaces;
-using MyApplication.Data.Models;
-
-namespace MyApplication.Data.Repositories;
-
-/// <summary>
-/// Writes application user audit records to the database.
-/// </summary>
-public sealed class UserAuditRepository : IUserAuditRepository
-{
-    private readonly FooBarDbContext _context;
-
-    /// <summary>
-    /// Initialises a new instance of the <see cref="UserAuditRepository"/> class.
-    /// </summary>
-    public UserAuditRepository(FooBarDbContext context)
-    {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
-    }
-
-    /// <inheritdoc />
-    public async Task AddAsync(
-        UserAuditRecord record,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(record);
-        ArgumentException.ThrowIfNullOrWhiteSpace(record.Action);
-
-        UserAuditLog entity = new()
-        {
-            UserId = record.UserId,
-            ChangedByUserId = record.ChangedByUserId,
-            ServiceAccountId = record.ServiceAccountId,
-            AuthenticationProvider = record.AuthenticationProvider,
-            Action = record.Action,
-            PropertyName = record.PropertyName,
-            OldValue = record.OldValue,
-            NewValue = record.NewValue,
-            ChangedUtc = record.ChangedUtc,
-            CorrelationId = record.CorrelationId
+            UserName = "john.smith",
+            Email = "john@company.com"
         };
 
-        await _context.Set<UserAuditLog>()
-            .AddAsync(entity, cancellationToken);
+        // Act
+        context.Users.Add(user);
 
-        await _context.SaveChangesAsync(cancellationToken);
+        await context.SaveChangesAsync();
+
+        // Assert
+        var auditRecords = await context.IdentityUserAudits
+            .Where(record => record.UserId == user.Id)
+            .ToListAsync();
+
+        auditRecords.ShouldNotBeEmpty();
+
+        auditRecords.ShouldAllBe(record =>
+            record.Action == "INSERT");
+
+        auditRecords.ShouldContain(record =>
+            record.PropertyName == "Email" &&
+            record.NewValue == "john@company.com");
+    }
+
+    [Fact]
+    public async Task SaveChangesAsync_WhenUserIsDeleted_ShouldCreateDeleteAudits()
+    {
+        // Arrange
+        await using var connection =
+            new SqliteConnection("Data Source=:memory:");
+
+        await connection.OpenAsync();
+
+        var options = CreateOptions(
+            connection,
+            CreateInterceptor(TimeProvider.System.GetUtcNow()));
+
+        await using var context =
+            new ApplicationDbContext(options);
+
+        await context.Database.EnsureCreatedAsync();
+
+        var user = new ApplicationUser
+        {
+            UserName = "john.smith",
+            Email = "john@company.com"
+        };
+
+        context.Users.Add(user);
+
+        await context.SaveChangesAsync();
+
+        var userId = user.Id;
+
+        // Act
+        context.Users.Remove(user);
+
+        await context.SaveChangesAsync();
+
+        // Assert
+        var audit = await context.IdentityUserAudits
+            .SingleAsync(record =>
+                record.UserId == userId &&
+                record.PropertyName == "Email" &&
+                record.Action == "DELETE");
+
+        audit.OldValue.ShouldBe("john@company.com");
+        audit.NewValue.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task SaveChangesAsync_WhenPasswordHashChanges_ShouldNotAuditPasswordHash()
+    {
+        // Arrange
+        await using var connection =
+            new SqliteConnection("Data Source=:memory:");
+
+        await connection.OpenAsync();
+
+        var options = CreateOptions(
+            connection,
+            CreateInterceptor(TimeProvider.System.GetUtcNow()));
+
+        await using var context =
+            new ApplicationDbContext(options);
+
+        await context.Database.EnsureCreatedAsync();
+
+        var user = new ApplicationUser
+        {
+            UserName = "john.smith",
+            PasswordHash = "OLD_HASH"
+        };
+
+        context.Users.Add(user);
+
+        await context.SaveChangesAsync();
+
+        // Act
+        user.PasswordHash = "NEW_HASH";
+
+        await context.SaveChangesAsync();
+
+        // Assert
+        var passwordAudit = await context.IdentityUserAudits
+            .AnyAsync(record =>
+                record.PropertyName == "PasswordHash");
+
+        passwordAudit.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task SaveChangesAsync_WhenPropertyIsUnchanged_ShouldNotCreateAuditRecord()
+    {
+        // Arrange
+        await using var connection =
+            new SqliteConnection("Data Source=:memory:");
+
+        await connection.OpenAsync();
+
+        var options = CreateOptions(
+            connection,
+            CreateInterceptor(TimeProvider.System.GetUtcNow()));
+
+        await using var context =
+            new ApplicationDbContext(options);
+
+        await context.Database.EnsureCreatedAsync();
+
+        var user = new ApplicationUser
+        {
+            UserName = "john.smith",
+            Email = "john@company.com"
+        };
+
+        context.Users.Add(user);
+
+        await context.SaveChangesAsync();
+
+        // Act
+        user.Email = "john@company.com";
+
+        await context.SaveChangesAsync();
+
+        // Assert
+        var emailUpdate = await context.IdentityUserAudits
+            .AnyAsync(record =>
+                record.UserId == user.Id &&
+                record.PropertyName == "Email" &&
+                record.Action == "UPDATE");
+
+        emailUpdate.ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task SaveChangesAsync_WhenTransactionRollsBack_ShouldRollbackAuditAndUserChanges()
+    {
+        // Arrange
+        await using var connection =
+            new SqliteConnection("Data Source=:memory:");
+
+        await connection.OpenAsync();
+
+        var options = CreateOptions(
+            connection,
+            CreateInterceptor(TimeProvider.System.GetUtcNow()));
+
+        await using var context =
+            new ApplicationDbContext(options);
+
+        await context.Database.EnsureCreatedAsync();
+
+        var user = new ApplicationUser
+        {
+            UserName = "john.smith",
+            Email = "old@company.com"
+        };
+
+        context.Users.Add(user);
+
+        await context.SaveChangesAsync();
+
+        var userId = user.Id;
+
+        // Act
+        await using (var transaction =
+            await context.Database.BeginTransactionAsync())
+        {
+            user.Email = "new@company.com";
+
+            await context.SaveChangesAsync();
+
+            await transaction.RollbackAsync();
+        }
+
+        // Assert
+        await using var verificationContext =
+            new ApplicationDbContext(options);
+
+        var persistedUser = await verificationContext.Users
+            .SingleAsync(record => record.Id == userId);
+
+        persistedUser.Email.ShouldBe("old@company.com");
+
+        var updateAudit = await verificationContext.IdentityUserAudits
+            .AnyAsync(record =>
+                record.UserId == userId &&
+                record.PropertyName == "Email" &&
+                record.Action == "UPDATE");
+
+        updateAudit.ShouldBeFalse();
+    }
+
+    private static IdentityUserAuditInterceptor CreateInterceptor(
+        DateTimeOffset timestamp)
+    {
+        return new IdentityUserAuditInterceptor(
+            new TestAuditActor(
+                new IdentityAuditActor(
+                    "admin-123",
+                    "Administrator",
+                    "correlation-123")),
+            new IdentityAuditPropertyPolicy(),
+            new FixedTimeProvider(timestamp));
+    }
+
+    private static DbContextOptions<ApplicationDbContext> CreateOptions(
+        SqliteConnection connection,
+        IdentityUserAuditInterceptor interceptor)
+    {
+        return new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlite(connection)
+            .AddInterceptors(interceptor)
+            .Options;
+    }
+
+    private sealed class TestAuditActor(
+        IdentityAuditActor actor) : IIdentityAuditActor
+    {
+        public IdentityAuditActor GetCurrentActor()
+        {
+            return actor;
+        }
+
+        public Task<IdentityAuditActor> GetCurrentActorAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(actor);
+        }
+    }
+
+    private sealed class FixedTimeProvider(
+        DateTimeOffset timestamp) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow()
+        {
+            return timestamp;
+        }
     }
 }
-```
-
-## **4.&#x20;**`UserServiceAccountRepository.cs`
-
-Global assignments are included for any page. Page-specific assignments are included only when the supplied `pageKey` matches.
 
 ```
-using Microsoft.EntityFrameworkCore;
 
-using MyApplication.Data.Contexts;
-using MyApplication.Data.Entities;
-using MyApplication.Data.Interfaces;
-using MyApplication.Data.Models;
+### **IdentityAuditPropertyPolicyTests.cs**
 
-namespace MyApplication.Data.Repositories;
+```
+
+using Shouldly;
+using Xunit;
+using YourSolution.Infrastructure.Identity;
+
+namespace YourSolution.Tests.Identity;
 
 /// <summary>
-/// Provides access to user-to-service-account assignments.
+/// Tests the Identity audit property policy.
 /// </summary>
-public sealed class UserServiceAccountRepository : IUserServiceAccountRepository
+public sealed class IdentityAuditPropertyPolicyTests
 {
-    private readonly FooBarDbContext _context;
+    private readonly IdentityAuditPropertyPolicy _sut = new();
 
-    /// <summary>
-    /// Initialises a new instance of the <see cref="UserServiceAccountRepository"/> class.
-    /// </summary>
-    public UserServiceAccountRepository(FooBarDbContext context)
+    [Theory]
+    [InlineData("PasswordHash")]
+    [InlineData("SecurityStamp")]
+    [InlineData("ConcurrencyStamp")]
+    [InlineData("AuthenticatorKey")]
+    [InlineData("RecoveryCodes")]
+    [InlineData("Id")]
+    public void ShouldAudit_WhenSensitivePropertyIsSupplied_ShouldReturnFalse(
+        string propertyName)
     {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
+        // Act
+        var result = _sut.ShouldAudit(propertyName);
+
+        // Assert
+        result.ShouldBeFalse();
     }
 
-    /// <inheritdoc />
-    public async Task<IReadOnlyList<UserServiceAccountRecord>> GetActiveAssignmentsAsync(
-        string userId,
-        string? pageKey,
-        CancellationToken cancellationToken = default)
+    [Theory]
+    [InlineData("Email")]
+    [InlineData("UserName")]
+    [InlineData("PhoneNumber")]
+    [InlineData("EmailConfirmed")]
+    [InlineData("LockoutEnabled")]
+    [InlineData("FirstName")]
+    [InlineData("LastName")]
+    public void ShouldAudit_WhenNormalPropertyIsSupplied_ShouldReturnTrue(
+        string propertyName)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+        // Act
+        var result = _sut.ShouldAudit(propertyName);
 
-        IQueryable<UserServiceAccount> query = _context
-            .Set<UserServiceAccount>()
-            .AsNoTracking()
-            .Where(assignment =>
-                assignment.UserId == userId &&
-                assignment.IsActive);
-
-        if (pageKey is null)
-        {
-            query = query.Where(assignment => assignment.PageKey == null);
-        }
-        else
-        {
-            query = query.Where(assignment =>
-                assignment.PageKey == null ||
-                assignment.PageKey == pageKey);
-        }
-
-        return await query
-            .OrderByDescending(assignment => assignment.IsDefault)
-            .ThenBy(assignment => assignment.CreatedUtc)
-            .Select(assignment => new UserServiceAccountRecord
-            {
-                Id = assignment.Id,
-                UserId = assignment.UserId,
-                ServiceAccountId = assignment.ServiceAccountId,
-                PageKey = assignment.PageKey,
-                IsDefault = assignment.IsDefault,
-                IsActive = assignment.IsActive,
-                CreatedUtc = assignment.CreatedUtc,
-                RevokedUtc = assignment.RevokedUtc
-            })
-            .ToListAsync(cancellationToken);
+        // Assert
+        result.ShouldBeTrue();
     }
 
-    /// <inheritdoc />
-    public async Task<bool> HasActiveAssignmentAsync(
-        string userId,
-        string serviceAccountId,
-        string? pageKey,
-        CancellationToken cancellationToken = default)
+    [Fact]
+    public void ShouldAudit_WhenPropertyNameIsEmpty_ShouldThrowException()
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(serviceAccountId);
+        // Act
+        var action = () => _sut.ShouldAudit(string.Empty);
 
-        IQueryable<UserServiceAccount> query = _context
-            .Set<UserServiceAccount>()
-            .AsNoTracking()
-            .Where(assignment =>
-                assignment.UserId == userId &&
-                assignment.ServiceAccountId == serviceAccountId &&
-                assignment.IsActive);
-
-        if (pageKey is null)
-        {
-            query = query.Where(assignment => assignment.PageKey == null);
-        }
-        else
-        {
-            query = query.Where(assignment =>
-                assignment.PageKey == null ||
-                assignment.PageKey == pageKey);
-        }
-
-        return await query.AnyAsync(cancellationToken);
+        // Assert
+        Should.Throw<ArgumentException>(action);
     }
 }
-```
-
-## **5. Update&#x20;**`IocStartup.cs`
-
-Register the repositories against the generated context:
 
 ```
-using Microsoft.Extensions.DependencyInjection;
 
-using MyApplication.Data.Contexts;
-using MyApplication.Data.Interfaces;
-using MyApplication.Data.Repositories;
-
-namespace MyApplication.Data.Infrastructure;
-
-/// <summary>
-/// Provides dependency injection registration for the application data layer.
-/// </summary>
-public static class IocStartup
-{
-    /// <summary>
-    /// Registers application data services.
-    /// </summary>
-    public static IServiceCollection AddApplicationData(
-        this IServiceCollection services)
-    {
-        services.AddScoped<IApplicationUserStore, ApplicationUserRepository>();
-        services.AddScoped<IUserPasswordHistoryRepository, UserPasswordHistoryRepository>();
-        services.AddScoped<IUserAuditRepository, UserAuditRepository>();
-        services.AddScoped<IUserServiceAccountRepository, UserServiceAccountRepository>();
-
-        return services;
-    }
-}
-```
-
-Your existing `FooBarDbContext` registration should remain in your application's database configuration, for example:
+Run the test suite using:
 
 ```
-services.AddDbContext<FooBarDbContext>(options =>
-    options.UseSqlServer(
-        configuration.GetConnectionString("DefaultConnection")));
+dotnet test \
+    --framework net10.0 \
+    -- \
+    --report-trx
 ```
 
-You do **not** need the additional `DbContext` base-type registration I suggested for the inline SQL implementation. These repositories now inject `FooBarDbContext` directly.
+The exact reporting options depend on the MTP runner configuration you install.
 
-## **6. Important assumptions to check**
+# **11. Important implementation checks**
 
-| Item                    | Assumption in the code |
-| ----------------------- | ---------------------- |
-| User entity             | `AspNetUser`           |
-| User DbSet              | `AspNetUsers`          |
-| Password history entity | `UserPasswordHistory`  |
-| Audit entity            | `UserAuditLog`         |
-| Assignment entity       | `UserServiceAccount`   |
-| User ID                 | `string`               |
-| Password history ID     | `long`                 |
-| Assignment ID           | `long`                 |
-| Service account ID      | `string`               |
-| Authentication provider | `byte`                 |
+Before considering Sprint 1 complete, there are a few integration details worth making explicit.
 
-The service account ID assumption is particularly important: if your existing `ServiceAccount` primary key is an integer, the assignment entity, model, and repository need to use that type instead.
+| Area                            | Expected behaviour                 |
+| ------------------------------- | ---------------------------------- |
+| UserManager.CreateAsync         | Audited                            |
+| UserManager.UpdateAsync         | Audited                            |
+| UserManager.DeleteAsync         | Audited                            |
+| UserManager.AddPasswordAsync    | PasswordHash excluded              |
+| UserManager.ChangePasswordAsync | PasswordHash excluded              |
+| UserManager.ResetPasswordAsync  | PasswordHash excluded              |
+| AD attribute synchronisation    | Audited when saved through EF Core |
+| Direct SQL changes              | Not captured                       |
+| EF Core ExecuteUpdateAsync      | Not captured                       |
 
-Also, these repositories assume EF Core Power Tools has generated the three additional entities and included them in the context model. `Set<TEntity>()` avoids needing their `DbSet` property names, but it does not remove the need for those entity types to exist.
+One additional consideration: the property policy currently excludes known sensitive properties by name. Any new confidential properties added to `ApplicationUser` must be reviewed and excluded explicitly.
 
-**One architectural note:** `UserAuditRepository.AddAsync` saves immediately. If you need an audit record to be committed atomically with a business update, both operations should share the same `FooBarDbContext` transaction rather than saving the audit independently.
+## **12. Two implementation details I would tighten before production**
 
-This replaces the earlier inline SQL repository versions; use these EF Core versions instead.
+**A. UserManager integration testing**
 
-## **12. Part 2 completion checklist**
+The tests above exercise the actual EF Core interception pipeline. I would add a further integration test using a real `UserManager<ApplicationUser>` and `UserStore<ApplicationUser>` against the test database. That proves the Identity store registration actually uses the intercepted DbContext.
 
-Implementation checklist
+**B. Interactive Blazor actor resolution**
 
-- Install the correct .NET 10 package references.
-- Generate the three new EF Core entities using Power Tools.
-- Add the application-owned record models.
-- Add the repository interfaces.
-- Implement atomic password-history updates.
-- Implement the user repository against the actual `AspNetUsers` schema.
-- Implement the audit repository.
-- Implement service-account assignment queries.
-- Register the repositories in dependency injection.
-- Confirm the generated context is registered only once.
+Use asynchronous Identity operations from interactive Blazor components and services. Synchronous saves only resolve the actor through `IHttpContextAccessor`; an interactive circuit without an HTTP context will be recorded as an unattributed system operation. This is preferable to incorrectly attributing a background operation to an administrator.
 
-**A note about completeness:** The interfaces and models above establish the Data project's contracts, but they are not yet a complete compilable repository implementation. I have not invented the generated context's namespace or the existing entity's property names. The concrete repository classes must be added against the database contract; the service-account active-status check also needs the actual existing table definition.
+## **Final Sprint 1 acceptance criteria**
 
-================================================================================================================================================================
-## **Next: Part 3 — API authentication**
-================================================================================================================================================================
+Scope agreed
+
+The deliverable is now limited to:
+
+1. SQL Server audit table and indexes.
+2. `ApplicationUser` change interception.
+3. Before-and-after property values.
+4. Administrator identification.
+5. UTC timestamps.
+6. Sensitive property exclusion.
+7. Atomic persistence with Identity changes.
+8. Centralised DI registration.
+9. Automated tests.
+
+No FluentUI pages, controllers, audit browsing, reporting or export functionality.
+
+**One final architectural recommendation:** keep the audit table append-only at the database permission level. That gives you a much stronger audit trail than relying on application code alone.
+
+This is the foundation I'd use for Sprint 1, with the integration tests and SQL Server verification as release gates.
