@@ -310,53 +310,51 @@ namespace YourSolution.Infrastructure.Identity;
 /// <summary>
 /// Resolves audit actors from ASP.NET Core and Blazor authentication.
 /// </summary>
-public sealed class HttpBlazorIdentityAuditActor(
-    IHttpContextAccessor httpContextAccessor,
-    AuthenticationStateProvider authenticationStateProvider)
+
+using System.Diagnostics;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Http;
+using YourSolution.Application.Identity;
+
+namespace YourSolution.Infrastructure.Identity;
+
+/// <summary>
+/// Resolves the current audit actor from the HTTP execution context.
+/// </summary>
+public sealed class HttpIdentityAuditActor(
+    IHttpContextAccessor httpContextAccessor)
     : IIdentityAuditActor
 {
     /// <inheritdoc />
     public IdentityAuditActor GetCurrentActor()
     {
-        var principal = httpContextAccessor.HttpContext?.User;
-
-        return CreateActor(principal);
+        return ResolveActor();
     }
 
     /// <inheritdoc />
-    public async Task<IdentityAuditActor> GetCurrentActorAsync(
+    public Task<IdentityAuditActor> GetCurrentActorAsync(
         CancellationToken cancellationToken = default)
     {
-        var principal = httpContextAccessor.HttpContext?.User;
+        cancellationToken.ThrowIfCancellationRequested();
 
-        if (principal?.Identity?.IsAuthenticated != true)
-        {
-            var authenticationState =
-                await authenticationStateProvider
-                    .GetAuthenticationStateAsync();
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            principal = authenticationState.User;
-        }
-
-        return CreateActor(principal);
+        return Task.FromResult(ResolveActor());
     }
 
-    private IdentityAuditActor CreateActor(
-        ClaimsPrincipal? principal)
+    private IdentityAuditActor ResolveActor()
     {
-        var httpContext = httpContextAccessor.HttpContext;
+        var context = httpContextAccessor.HttpContext;
+
+        var principal = context?.User;
 
         var correlationId =
-            httpContext?.TraceIdentifier
+            context?.TraceIdentifier
             ?? Activity.Current?.Id;
 
         if (principal?.Identity?.IsAuthenticated != true)
         {
             return new IdentityAuditActor(
                 null,
-                "Unattributed System Operation",
+                "System / Unauthenticated Operation",
                 correlationId);
         }
 
@@ -374,6 +372,7 @@ public sealed class HttpBlazorIdentityAuditActor(
             correlationId);
     }
 }
+
 
 ```
 
@@ -785,9 +784,11 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<TimeProvider>(
             TimeProvider.System);
 
-        services.AddScoped<
-            IIdentityAuditActor,
-            HttpBlazorIdentityAuditActor>();
+        services.AddHttpContextAccessor();
+
+		services.AddHttpContextAccessor();
+
+		services.AddScoped< IIdentityAuditActor, HttpIdentityAuditActor>();
 
         services.AddScoped<IdentityAuditPropertyPolicy>();
 
