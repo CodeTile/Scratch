@@ -1,1342 +1,1264 @@
-Below is the regenerated Sprint 1 implementation, incorporating your actual architectural decisions.
+# **Account security implementation — Sprint 1**
 
-I've consolidated the dependency injection into **one&#x20;**`IServiceCollection`**&#x20;extension**, retained `ApplicationUser : IdentityUser`, and removed all audit-viewing functionality.
+We'll implement the three account-security requirements for your .NET 10 / C# 14 Blazor Interactive Server application.
 
-I've also corrected some important details from the earlier version:
+The implementation will use:
 
-- The actor record and actor service have distinct names.
-- The interceptor supports synchronous and asynchronous saves.
-- Audit records are added to the same DbContext transaction.
-- Password hashes, security stamps and concurrency stamps are excluded.
-- Background operations must supply an explicit system or service actor rather than inherit an interactive Blazor user's identity.
-- Audit values are redacted according to a central policy.
-- The audit table has no foreign key to `AspNetUsers`.
+- ASP.NET Core Identity and your existing `ApplicationUser`.
+- SQL Server 2019, database-first.
+- FluentUI Blazor for the user interface.
+- `UserManager` and `SignInManager` for Identity operations.
+- `TimeProvider` for all date/time calculations.
+- Your existing central DI extension.
+- xUnit.v3, Shouldly and Moq for unit tests.
+- No SQLite, no integration tests and no scheduled worker in this sprint.
 
-# **1. Solution structure**
+I'm going to separate the security rules from the UI and authentication transport. This is important because your application supports both username/password and Active Directory authentication.
 
-```
-YourSolution
-│
-├── Domain
-│   └── Identity
-│       └── IdentityUserAudit.cs
-│
-├── Application
-│   └── Identity
-│       ├── IdentityAuditActor.cs
-│       └── IIdentityAuditActor.cs
-│
-├── Infrastructure
-│   ├── Data
-│   │   └── ApplicationDbContext.cs
-│   │
-│   └── Identity
-│       ├── IdentityUserAuditInterceptor.cs
-│       ├── IdentityAuditPropertyPolicy.cs
-│       └── HttpBlazorIdentityAuditActor.cs
-│
-├── Extensions
-│   └── ServiceCollectionExtensions.cs
-│
-└── Tests
-    └── Identity
-        ├── IdentityUserAuditInterceptorTests.cs
-        └── IdentityAuditPropertyPolicyTests.cs
-```
+## **1. Expected behaviour**
 
-The namespaces below are illustrative; keep your existing project namespace conventions.
+| Scenario                                        | Result                                           |
+| ----------------------------------------------- | ------------------------------------------------ |
+| Password is younger than configured expiry      | Normal login                                     |
+| Password has expired                            | Restricted password-change session               |
+| Administrator resets password                   | Restricted password-change session at next login |
+| User changes own password                       | Expiry period restarts                           |
+| User has not logged in within configured period | Account locked at login                          |
+| Account is already locked                       | Login rejected                                   |
+| AD user authenticates successfully              | Application inactivity policy still applies      |
 
-# **2. SQL Server 2019 – database-first script**
+For AD-managed passwords, the application should not attempt to change the AD password using `UserManager`. AD should remain responsible for the actual password lifecycle. The application can still enforce inactivity and any application-specific forced-change requirements.
 
-File: `Database/Scripts/001_CreateIdentityUserAudit.sql`
+## **2. Configuration**
+
+Add the following to `appsettings.json`:
 
 ```
 
-IF OBJECT_ID(N'dbo.IdentityUserAudit', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.IdentityUserAudit
-    (
-        AuditId BIGINT IDENTITY(1,1) NOT NULL,
-
-        UserId NVARCHAR(450) NOT NULL,
-
-        Action NVARCHAR(20) NOT NULL,
-
-        PropertyName NVARCHAR(256) NOT NULL,
-
-        OldValue NVARCHAR(MAX) NULL,
-
-        NewValue NVARCHAR(MAX) NULL,
-
-        ChangedBy NVARCHAR(450) NULL,
-
-        ChangedByName NVARCHAR(256) NULL,
-
-        ChangedAtUtc DATETIME2(7) NOT NULL,
-
-        CorrelationId NVARCHAR(128) NULL,
-
-        CONSTRAINT PK_IdentityUserAudit
-            PRIMARY KEY CLUSTERED (AuditId),
-
-        CONSTRAINT CK_IdentityUserAudit_Action
-            CHECK (Action IN ('INSERT', 'UPDATE', 'DELETE'))
-    );
-END;
-GO
-
-IF NOT EXISTS
-(
-    SELECT 1
-    FROM sys.indexes
-    WHERE name = N'IX_IdentityUserAudit_UserId'
-      AND object_id = OBJECT_ID(N'dbo.IdentityUserAudit')
-)
-BEGIN
-    CREATE INDEX IX_IdentityUserAudit_UserId
-        ON dbo.IdentityUserAudit(UserId);
-END;
-GO
-
-IF NOT EXISTS
-(
-    SELECT 1
-    FROM sys.indexes
-    WHERE name = N'IX_IdentityUserAudit_ChangedAtUtc'
-      AND object_id = OBJECT_ID(N'dbo.IdentityUserAudit')
-)
-BEGIN
-    CREATE INDEX IX_IdentityUserAudit_ChangedAtUtc
-        ON dbo.IdentityUserAudit(ChangedAtUtc);
-END;
-GO
-
-IF NOT EXISTS
-(
-    SELECT 1
-    FROM sys.indexes
-    WHERE name = N'IX_IdentityUserAudit_ChangedBy'
-      AND object_id = OBJECT_ID(N'dbo.IdentityUserAudit')
-)
-BEGIN
-    CREATE INDEX IX_IdentityUserAudit_ChangedBy
-        ON dbo.IdentityUserAudit(ChangedBy);
-END;
-GO
-
-```
-
-No foreign key is deliberately created. Deleting an Identity account must not delete its audit history.
-
-# **3. Domain – audit entity**
-
-File: `Domain/Identity/IdentityUserAudit.cs`
-
-```
-
-namespace YourSolution.Domain.Identity;
-
-/// <summary>
-/// Represents an individual change made to an Identity user.
-/// </summary>
-public sealed class IdentityUserAudit
 {
-    /// <summary>
-    /// Gets or sets the audit record identifier.
-    /// </summary>
-    public long AuditId { get; set; }
-
-    /// <summary>
-    /// Gets or sets the affected Identity user identifier.
-    /// </summary>
-    public required string UserId { get; set; }
-
-    /// <summary>
-    /// Gets or sets the type of operation performed.
-    /// </summary>
-    public required string Action { get; set; }
-
-    /// <summary>
-    /// Gets or sets the name of the modified property.
-    /// </summary>
-    public required string PropertyName { get; set; }
-
-    /// <summary>
-    /// Gets or sets the original property value.
-    /// </summary>
-    public string? OldValue { get; set; }
-
-    /// <summary>
-    /// Gets or sets the new property value.
-    /// </summary>
-    public string? NewValue { get; set; }
-
-    /// <summary>
-    /// Gets or sets the identifier of the person making the change.
-    /// </summary>
-    public string? ChangedBy { get; set; }
-
-    /// <summary>
-    /// Gets or sets the display name of the person making the change.
-    /// </summary>
-    public string? ChangedByName { get; set; }
-
-    /// <summary>
-    /// Gets or sets the UTC timestamp of the change.
-    /// </summary>
-    public DateTime ChangedAtUtc { get; set; }
-
-    /// <summary>
-    /// Gets or sets the request correlation identifier.
-    /// </summary>
-    public string? CorrelationId { get; set; }
+  "AccountSecurity": {
+    "PasswordExpiryDays": 90,
+    "InactiveAccountLockDays": 90,
+    "LockoutExemptionsEnabled": true
+  }
 }
 
 ```
 
-# **4. Application – actor abstraction**
-
-File: `Application/Identity/IdentityAuditActor.cs`
+Create `AccountSecurityOptions.cs`:
 
 ```
 
-namespace YourSolution.Application.Identity;
+namespace YourApplication.Configuration;
 
 /// <summary>
-/// Describes the identity responsible for an audited operation.
+/// Defines application account-security settings.
 /// </summary>
-public sealed record IdentityAuditActor(
-    string? UserId,
-    string? DisplayName,
-    string? CorrelationId);
-
-```
-
-File: `Application/Identity/IIdentityAuditActor.cs`
-
-```
-
-namespace YourSolution.Application.Identity;
-
-/// <summary>
-/// Resolves the identity responsible for an audited operation.
-/// </summary>
-public interface IIdentityAuditActor
+public sealed class AccountSecurityOptions
 {
     /// <summary>
-    /// Gets the current audit actor synchronously.
+    /// Gets or sets the number of days before a locally managed password expires.
     /// </summary>
-    IdentityAuditActor GetCurrentActor();
+    public int PasswordExpiryDays { get; set; } = 90;
 
     /// <summary>
-    /// Gets the current audit actor asynchronously.
+    /// Gets or sets the number of days without a successful login
+    /// before an account is locked.
     /// </summary>
-    Task<IdentityAuditActor> GetCurrentActorAsync(
-        CancellationToken cancellationToken = default);
+    public int InactiveAccountLockDays { get; set; } = 90;
+
+    /// <summary>
+    /// Gets or sets whether explicitly exempted accounts are excluded
+    /// from inactivity locking.
+    /// </summary>
+    public bool LockoutExemptionsEnabled { get; set; } = true;
 }
 
 ```
 
-# **5. Infrastructure – property auditing policy**
+## **3. Extend ApplicationUser**
 
-I recommend keeping sensitive-property handling separate from the interceptor.
-
-This makes it easier to extend `ApplicationUser` later without embedding security decisions throughout the persistence logic.
-
-File: `Infrastructure/Identity/IdentityAuditPropertyPolicy.cs`
+Add the following properties to your existing `ApplicationUser`. Do not replace your existing Identity properties.
 
 ```
 
-namespace YourSolution.Infrastructure.Identity;
+/// <summary>
+/// Gets or sets the UTC date and time of the user's last successful application login.
+/// </summary>
+public DateTimeOffset? LastLoginAtUtc { get; set; }
 
 /// <summary>
-/// Determines which ApplicationUser properties may be audited.
+/// Gets or sets the UTC date and time the user's password was last changed.
 /// </summary>
-public sealed class IdentityAuditPropertyPolicy
+public DateTimeOffset? PasswordChangedAtUtc { get; set; }
+
+/// <summary>
+/// Gets or sets the UTC date and time the account was created.
+/// </summary>
+public DateTimeOffset CreatedAtUtc { get; set; }
+
+/// <summary>
+/// Gets or sets whether the user must change their password.
+/// </summary>
+public bool MustChangePassword { get; set; }
+
+/// <summary>
+/// Gets or sets whether the password is managed by an external directory.
+/// </summary>
+public bool PasswordManagedExternally { get; set; }
+
+/// <summary>
+/// Gets or sets whether the account is exempt from inactivity locking.
+/// </summary>
+public bool IsExemptFromInactivityLockout { get; set; }
+
+```
+
+`CreatedAtUtc` is important. Without it, we cannot correctly determine the inactivity period for users who have never logged in.
+
+### **SQL Server script**
+
+This is an idempotent database-first script:
+
+```
+
+IF COL_LENGTH('dbo.AspNetUsers', 'LastLoginAtUtc') IS NULL
+BEGIN
+    ALTER TABLE dbo.AspNetUsers
+    ADD LastLoginAtUtc datetimeoffset(7) NULL;
+END;
+
+IF COL_LENGTH('dbo.AspNetUsers', 'PasswordChangedAtUtc') IS NULL
+BEGIN
+    ALTER TABLE dbo.AspNetUsers
+    ADD PasswordChangedAtUtc datetimeoffset(7) NULL;
+END;
+
+IF COL_LENGTH('dbo.AspNetUsers', 'CreatedAtUtc') IS NULL
+BEGIN
+    ALTER TABLE dbo.AspNetUsers
+    ADD CreatedAtUtc datetimeoffset(7) NOT NULL
+        CONSTRAINT DF_AspNetUsers_CreatedAtUtc
+        DEFAULT (SYSUTCDATETIME());
+END;
+
+IF COL_LENGTH('dbo.AspNetUsers', 'MustChangePassword') IS NULL
+BEGIN
+    ALTER TABLE dbo.AspNetUsers
+    ADD MustChangePassword bit NOT NULL
+        CONSTRAINT DF_AspNetUsers_MustChangePassword
+        DEFAULT (0);
+END;
+
+IF COL_LENGTH('dbo.AspNetUsers', 'PasswordManagedExternally') IS NULL
+BEGIN
+    ALTER TABLE dbo.AspNetUsers
+    ADD PasswordManagedExternally bit NOT NULL
+        CONSTRAINT DF_AspNetUsers_PasswordManagedExternally
+        DEFAULT (0);
+END;
+
+IF COL_LENGTH('dbo.AspNetUsers', 'IsExemptFromInactivityLockout') IS NULL
+BEGIN
+    ALTER TABLE dbo.AspNetUsers
+    ADD IsExemptFromInactivityLockout bit NOT NULL
+        CONSTRAINT DF_AspNetUsers_IsExemptFromInactivityLockout
+        DEFAULT (0);
+END;
+
+```
+
+Existing accounts will receive the deployment date as their initial `CreatedAtUtc`. You should initialise `PasswordChangedAtUtc` deliberately: setting it to the deployment date gives existing users a full new expiry period.
+
+For new users, explicitly set `CreatedAtUtc` in your user-creation service. The SQL default is a safety net.
+
+## **4. Account password policy**
+
+This class contains the password-expiry calculation. It has no database dependency and is straightforward to unit test.
+
+`AccountPasswordPolicy.cs`:
+
+```
+
+using Microsoft.Extensions.Options;
+using YourApplication.Configuration;
+
+namespace YourApplication.Security;
+
+/// <summary>
+/// Evaluates application password-change requirements.
+/// </summary>
+public sealed class AccountPasswordPolicy
 {
-    private static readonly HashSet<string> ExcludedProperties =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            "Id",
-            "PasswordHash",
-            "SecurityStamp",
-            "ConcurrencyStamp",
-            "AuthenticatorKey",
-            "RecoveryCodes",
-            "TwoFactorRecoveryCodes",
-            "AccessToken",
-            "RefreshToken",
-            "ClientSecret"
-        };
+    private readonly AccountSecurityOptions _options;
+    private readonly TimeProvider _timeProvider;
 
     /// <summary>
-    /// Determines whether a property is eligible for auditing.
+    /// Initialises the password policy.
     /// </summary>
-    public bool ShouldAudit(string propertyName)
+    public AccountPasswordPolicy(
+        IOptions<AccountSecurityOptions> options,
+        TimeProvider timeProvider)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(propertyName);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(timeProvider);
 
-        return !ExcludedProperties.Contains(propertyName);
+        _options = options.Value;
+        _timeProvider = timeProvider;
+    }
+
+    /// <summary>
+    /// Determines whether a user must change their password.
+    /// </summary>
+    public bool MustChangePassword(ApplicationUser user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+
+        if (user.PasswordManagedExternally)
+        {
+            return false;
+        }
+
+        if (user.MustChangePassword)
+        {
+            return true;
+        }
+
+        if (!user.PasswordChangedAtUtc.HasValue)
+        {
+            return true;
+        }
+
+        DateTimeOffset expiryDate =
+            user.PasswordChangedAtUtc.Value.AddDays(
+                _options.PasswordExpiryDays);
+
+        return _timeProvider.GetUtcNow() >= expiryDate;
     }
 }
 
 ```
 
-This is an explicit deny-list for sensitive values. When you add additional confidential properties to `ApplicationUser`, add them here.
+The policy deliberately treats a locally managed account with no recorded password-change date as requiring a password change. This avoids silently allowing passwords whose age is unknown.
 
-# **6. Infrastructure – audit actor implementation**
+## **5. Account inactivity policy**
 
-File: `Infrastructure/Identity/HttpBlazorIdentityAuditActor.cs`
+The inactivity calculation should also be independent of Identity and EF Core.
 
-This supports the two execution environments:
-
-- Standard ASP.NET Core HTTP requests.
-- Interactive Blazor authentication through `AuthenticationStateProvider`.
-
-For synchronous saves, it uses the HTTP principal only. If a Blazor circuit has no HTTP context, the actor is recorded as an unattributed system operation rather than incorrectly attributing it to somebody else.
-
-For asynchronous saves, it can resolve the Blazor circuit principal.
+`AccountInactivityPolicy.cs`:
 
 ```
 
-using System.Diagnostics;
+using Microsoft.Extensions.Options;
+using YourApplication.Configuration;
+
+namespace YourApplication.Security;
+
+/// <summary>
+/// Evaluates whether an account has exceeded its permitted inactivity period.
+/// </summary>
+public sealed class AccountInactivityPolicy
+{
+    private readonly AccountSecurityOptions _options;
+    private readonly TimeProvider _timeProvider;
+
+    /// <summary>
+    /// Initialises the inactivity policy.
+    /// </summary>
+    public AccountInactivityPolicy(
+        IOptions<AccountSecurityOptions> options,
+        TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        _options = options.Value;
+        _timeProvider = timeProvider;
+    }
+
+    /// <summary>
+    /// Determines whether an account has exceeded the inactivity period.
+    /// </summary>
+    public bool IsInactive(ApplicationUser user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+
+        if (_options.LockoutExemptionsEnabled &&
+            user.IsExemptFromInactivityLockout)
+        {
+            return false;
+        }
+
+        DateTimeOffset lastActivity =
+            user.LastLoginAtUtc ?? user.CreatedAtUtc;
+
+        DateTimeOffset inactivityThreshold =
+            _timeProvider.GetUtcNow().AddDays(
+                -_options.InactiveAccountLockDays);
+
+        return lastActivity <= inactivityThreshold;
+    }
+}
+
+```
+
+Notice that this uses `LastLoginAtUtc` if available, otherwise `CreatedAtUtc`.
+
+## **6. Restrict the authenticated session when a password change is required**
+
+This is particularly important for Interactive Server.
+
+We must not let a user with an expired password access ordinary application pages. A useful way to do this is to add a claim to the Identity principal when it is created.
+
+Create `AccountSecurityClaimTypes.cs`:
+
+```
+
+namespace YourApplication.Security;
+
+/// <summary>
+/// Defines claim types used by account-security authorization.
+/// </summary>
+public static class AccountSecurityClaimTypes
+{
+    /// <summary>
+    /// Identifies an account that must change its password.
+    /// </summary>
+    public const string PasswordChangeRequired =
+        "account_security.password_change_required";
+}
+
+```
+
+Create `AccountClaimsPrincipalFactory.cs`:
+
+```
+
 using System.Security.Claims;
-using Microsoft.AspNetCore.Components.Authorization;
-using Microsoft.AspNetCore.Http;
-using YourSolution.Application.Identity;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Options;
 
-namespace YourSolution.Infrastructure.Identity;
-
-/// <summary>
-/// Resolves audit actors from ASP.NET Core and Blazor authentication.
-/// </summary>
-
-using System.Diagnostics;
-using System.Security.Claims;
-using Microsoft.AspNetCore.Http;
-using YourSolution.Application.Identity;
-
-namespace YourSolution.Infrastructure.Identity;
+namespace YourApplication.Security;
 
 /// <summary>
-/// Resolves the current audit actor from the HTTP execution context.
+/// Creates Identity principals containing application account-security claims.
 /// </summary>
-public sealed class HttpIdentityAuditActor(
-    IHttpContextAccessor httpContextAccessor)
-    : IIdentityAuditActor
+public sealed class AccountClaimsPrincipalFactory
+    : UserClaimsPrincipalFactory<ApplicationUser>
 {
-    /// <inheritdoc />
-    public IdentityAuditActor GetCurrentActor()
+    private readonly AccountPasswordPolicy _passwordPolicy;
+
+    /// <summary>
+    /// Initialises the account claims principal factory.
+    /// </summary>
+    public AccountClaimsPrincipalFactory(
+        UserManager<ApplicationUser> userManager,
+        IOptions<IdentityOptions> identityOptions,
+        AccountPasswordPolicy passwordPolicy)
+        : base(userManager, identityOptions)
     {
-        return ResolveActor();
+        ArgumentNullException.ThrowIfNull(passwordPolicy);
+
+        _passwordPolicy = passwordPolicy;
     }
 
-    /// <inheritdoc />
-    public Task<IdentityAuditActor> GetCurrentActorAsync(
-        CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Creates a claims principal for the specified user.
+    /// </summary>
+    public override async Task<ClaimsPrincipal> CreateAsync(
+        ApplicationUser user)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(user);
 
-        return Task.FromResult(ResolveActor());
-    }
+        ClaimsPrincipal principal = await base.CreateAsync(user);
 
-    private IdentityAuditActor ResolveActor()
-    {
-        var context = httpContextAccessor.HttpContext;
+        ClaimsIdentity? identity = principal.Identity as ClaimsIdentity;
 
-        var principal = context?.User;
-
-        var correlationId =
-            context?.TraceIdentifier
-            ?? Activity.Current?.Id;
-
-        if (principal?.Identity?.IsAuthenticated != true)
+        if (identity is null)
         {
-            return new IdentityAuditActor(
-                null,
-                "System / Unauthenticated Operation",
-                correlationId);
+            throw new InvalidOperationException(
+                "The Identity principal does not contain a ClaimsIdentity.");
         }
 
-        var userId = principal.FindFirstValue(
-            ClaimTypes.NameIdentifier);
+        if (_passwordPolicy.MustChangePassword(user))
+        {
+            identity.AddClaim(
+                new Claim(
+                    AccountSecurityClaimTypes.PasswordChangeRequired,
+                    "true"));
+        }
 
-        var displayName =
-            principal.FindFirstValue(ClaimTypes.Name)
-            ?? principal.Identity?.Name
-            ?? userId;
-
-        return new IdentityAuditActor(
-            userId,
-            displayName,
-            correlationId);
+        return principal;
     }
 }
 
+```
+
+This ensures that when `SignInManager` creates a cookie, the principal contains the appropriate restriction claim.
+
+### **Authorization policies**
+
+Register the following policies:
 
 ```
 
-**Important:** Background services should use a dedicated system actor identity, not an interactive Blazor `AuthenticationStateProvider`. The unattributed fallback above is intentional. If you need to identify individual background jobs, introduce an explicit job actor rather than relying on ambient authentication.
+using Microsoft.AspNetCore.Authorization;
+using YourApplication.Security;
 
-# **7. Infrastructure – ApplicationDbContext**
-
-File: `Infrastructure/Data/ApplicationDbContext.cs`
-
-This is the relevant addition to your existing context.
-
-```
-
-using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore;
-using YourSolution.Domain.Identity;
-using YourSolution.Domain.Users;
-
-namespace YourSolution.Infrastructure.Data;
+namespace YourApplication.Configuration;
 
 /// <summary>
-/// Provides database access for application and Identity data.
+/// Provides application authorization policy registration.
 /// </summary>
-public class ApplicationDbContext(
-    DbContextOptions<ApplicationDbContext> options)
-    : IdentityDbContext<ApplicationUser>(options)
+public static class AccountAuthorizationPolicies
 {
     /// <summary>
-    /// Gets the Identity user audit records.
+    /// Registers account-security authorization policies.
     /// </summary>
-    public DbSet<IdentityUserAudit> IdentityUserAudits =>
-        Set<IdentityUserAudit>();
-
-    /// <inheritdoc />
-    protected override void OnModelCreating(ModelBuilder builder)
+    public static void AddAccountAuthorizationPolicies(
+        this AuthorizationOptions options)
     {
-        base.OnModelCreating(builder);
+        ArgumentNullException.ThrowIfNull(options);
 
-        builder.Entity<IdentityUserAudit>(entity =>
-        {
-            entity.ToTable("IdentityUserAudit", "dbo");
+        AuthorizationPolicy normalApplicationAccess =
+            new AuthorizationPolicyBuilder()
+                .RequireAuthenticatedUser()
+                .RequireAssertion(context =>
+                    !context.User.HasClaim(
+                        AccountSecurityClaimTypes.PasswordChangeRequired,
+                        "true"))
+                .Build();
 
-            entity.HasKey(audit => audit.AuditId);
+        options.DefaultPolicy = normalApplicationAccess;
+        options.FallbackPolicy = normalApplicationAccess;
 
-            entity.Property(audit => audit.AuditId)
-                .ValueGeneratedOnAdd();
-
-            entity.Property(audit => audit.UserId)
-                .HasMaxLength(450)
-                .IsRequired();
-
-            entity.Property(audit => audit.Action)
-                .HasMaxLength(20)
-                .IsRequired();
-
-            entity.Property(audit => audit.PropertyName)
-                .HasMaxLength(256)
-                .IsRequired();
-
-            entity.Property(audit => audit.OldValue)
-                .HasColumnType("nvarchar(max)");
-
-            entity.Property(audit => audit.NewValue)
-                .HasColumnType("nvarchar(max)");
-
-            entity.Property(audit => audit.ChangedBy)
-                .HasMaxLength(450);
-
-            entity.Property(audit => audit.ChangedByName)
-                .HasMaxLength(256);
-
-            entity.Property(audit => audit.ChangedAtUtc)
-                .HasColumnType("datetime2(7)")
-                .IsRequired();
-
-            entity.Property(audit => audit.CorrelationId)
-                .HasMaxLength(128);
-        });
-    }
-}
-
-```
-
-If your existing context already has substantial `OnModelCreating` configuration, retain it and add only the `IdentityUserAudit` entity configuration.
-
-No migrations are required.
-
-# **8. Infrastructure – EF Core SaveChangesInterceptor**
-
-File: `Infrastructure/Identity/IdentityUserAuditInterceptor.cs`
-
-This is the main auditing component.
-
-```
-
-using System.Globalization;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.ChangeTracking;
-using Microsoft.EntityFrameworkCore.Diagnostics;
-using YourSolution.Application.Identity;
-using YourSolution.Domain.Identity;
-using YourSolution.Domain.Users;
-
-namespace YourSolution.Infrastructure.Identity;
-
-/// <summary>
-/// Intercepts EF Core persistence operations and audits ApplicationUser changes.
-/// </summary>
-public sealed class IdentityUserAuditInterceptor(
-    IIdentityAuditActor auditActor,
-    IdentityAuditPropertyPolicy propertyPolicy,
-    TimeProvider timeProvider)
-    : SaveChangesInterceptor
-{
-    /// <inheritdoc />
-    public override InterceptionResult<int> SavingChanges(
-        DbContextEventData eventData,
-        InterceptionResult<int> result)
-    {
-        if (eventData.Context is DbContext context)
-        {
-            AddAuditEntries(
-                context,
-                auditActor.GetCurrentActor());
-        }
-
-        return result;
-    }
-
-    /// <inheritdoc />
-    public override async ValueTask<InterceptionResult<int>>
-        SavingChangesAsync(
-            DbContextEventData eventData,
-            InterceptionResult<int> result,
-            CancellationToken cancellationToken = default)
-    {
-        if (eventData.Context is DbContext context)
-        {
-            var actor = await auditActor.GetCurrentActorAsync(
-                cancellationToken);
-
-            AddAuditEntries(context, actor);
-        }
-
-        return result;
-    }
-
-    private void AddAuditEntries(
-        DbContext context,
-        IdentityAuditActor actor)
-    {
-        context.ChangeTracker.DetectChanges();
-
-        var userEntries = context.ChangeTracker
-            .Entries<ApplicationUser>()
-            .Where(entry =>
-                entry.State is EntityState.Added
-                    or EntityState.Modified
-                    or EntityState.Deleted)
-            .ToList();
-
-        if (userEntries.Count == 0)
-        {
-            return;
-        }
-
-        var timestamp = timeProvider.GetUtcNow().UtcDateTime;
-
-        var auditEntries = new List<IdentityUserAudit>();
-
-        foreach (var entry in userEntries)
-        {
-            auditEntries.AddRange(
-                CreateAuditEntries(
-                    entry,
-                    actor,
-                    timestamp));
-        }
-
-        if (auditEntries.Count > 0)
-        {
-            context.Set<IdentityUserAudit>()
-                .AddRange(auditEntries);
-        }
-    }
-
-    private IEnumerable<IdentityUserAudit> CreateAuditEntries(
-        EntityEntry<ApplicationUser> entry,
-        IdentityAuditActor actor,
-        DateTime timestamp)
-    {
-        var action = GetAction(entry.State);
-
-        foreach (var property in entry.Properties)
-        {
-            var propertyName = property.Metadata.Name;
-
-            if (!propertyPolicy.ShouldAudit(propertyName))
+        options.AddPolicy(
+            "PasswordChangeOnly",
+            policy =>
             {
-                continue;
-            }
-
-            if (!ShouldAuditProperty(entry, property))
-            {
-                continue;
-            }
-
-            yield return new IdentityUserAudit
-            {
-                UserId = entry.Entity.Id,
-                Action = action,
-                PropertyName = propertyName,
-                OldValue = GetOldValue(entry, property),
-                NewValue = GetNewValue(entry, property),
-                ChangedBy = actor.UserId,
-                ChangedByName = actor.DisplayName,
-                ChangedAtUtc = timestamp,
-                CorrelationId = actor.CorrelationId
-            };
-        }
-    }
-
-    private static string GetAction(EntityState state)
-    {
-        return state switch
-        {
-            EntityState.Added => "INSERT",
-            EntityState.Modified => "UPDATE",
-            EntityState.Deleted => "DELETE",
-
-            _ => throw new InvalidOperationException(
-                $"Unsupported Identity user state: {state}")
-        };
-    }
-
-    private static bool ShouldAuditProperty(
-        EntityEntry<ApplicationUser> entry,
-        PropertyEntry property)
-    {
-        if (entry.State == EntityState.Added)
-        {
-            return property.CurrentValue is not null;
-        }
-
-        if (entry.State == EntityState.Deleted)
-        {
-            return property.OriginalValue is not null;
-        }
-
-        if (entry.State == EntityState.Modified)
-        {
-            return property.IsModified
-                && !Equals(
-                    property.OriginalValue,
-                    property.CurrentValue);
-        }
-
-        return false;
-    }
-
-    private static string? GetOldValue(
-        EntityEntry<ApplicationUser> entry,
-        PropertyEntry property)
-    {
-        if (entry.State == EntityState.Added)
-        {
-            return null;
-        }
-
-        return FormatValue(property.OriginalValue);
-    }
-
-    private static string? GetNewValue(
-        EntityEntry<ApplicationUser> entry,
-        PropertyEntry property)
-    {
-        if (entry.State == EntityState.Deleted)
-        {
-            return null;
-        }
-
-        return FormatValue(property.CurrentValue);
-    }
-
-    private static string? FormatValue(object? value)
-    {
-        if (value is null)
-        {
-            return null;
-        }
-
-        if (value is byte[])
-        {
-            return "[BINARY VALUE OMITTED]";
-        }
-
-        if (value is DateTime dateTime)
-        {
-            return dateTime.ToString(
-                "O",
-                CultureInfo.InvariantCulture);
-        }
-
-        if (value is DateTimeOffset dateTimeOffset)
-        {
-            return dateTimeOffset.ToString(
-                "O",
-                CultureInfo.InvariantCulture);
-        }
-
-        if (value is bool boolean)
-        {
-            return boolean.ToString();
-        }
-
-        if (value is IFormattable formattable)
-        {
-            return formattable.ToString(
-                null,
-                CultureInfo.InvariantCulture);
-        }
-
-        return value.ToString();
-    }
-}
-
-```
-
-### **How this works**
-
-For example, if your application executes:
-
-```
-var user = await userManager.FindByIdAsync(userId);
-
-user.Email = "new@company.com";
-user.PhoneNumber = "0123456789";
-
-await userManager.UpdateAsync(user);
-```
-
-The Identity EF store updates `ApplicationUser` through `ApplicationDbContext`.
-
-The interceptor sees the two modified properties and adds two audit records before EF Core executes the save.
-
-The resulting records look like this:
-
-| Property    | Old value        | New value        |
-| ----------- | ---------------- | ---------------- |
-| Email       | old\@company.com | new\@company.com |
-| PhoneNumber | NULL             | 0123456789       |
-
-The audit records and user changes are persisted together.
-
-**Important:** `UserManager.UpdateAsync` can also update the concurrency stamp and other Identity properties. Those are deliberately excluded.
-
-Also, this interceptor only captures changes made through the tracked EF Core entity pipeline. Bulk updates and direct SQL need separate auditing.
-
-# **9. Single IServiceCollection extension**
-
-This is where all the registrations belong in your project.
-
-File: `Extensions/ServiceCollectionExtensions.cs`
-
-The following example assumes your existing `ApplicationDbContext` is registered here too.
-
-```
-
-using Microsoft.AspNetCore.Components.Authorization;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using YourSolution.Application.Identity;
-using YourSolution.Infrastructure.Data;
-using YourSolution.Infrastructure.Identity;
-
-namespace YourSolution.Extensions;
-
-/// <summary>
-/// Provides central application dependency injection registrations.
-/// </summary>
-public static class ServiceCollectionExtensions
-{
-    /// <summary>
-    /// Registers application services and infrastructure dependencies.
-    /// </summary>
-    public static IServiceCollection AddApplicationServices(
-        this IServiceCollection services,
-        IConfiguration configuration)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(configuration);
-
-        RegisterIdentityAuditing(services);
-
-        RegisterDatabase(services, configuration);
-
-        // Retain all your existing application registrations here.
-
-        return services;
-    }
-
-    private static void RegisterIdentityAuditing(
-        IServiceCollection services)
-    {
-        services.AddHttpContextAccessor();
-
-        services.TryAddSingleton<TimeProvider>(
-            TimeProvider.System);
-
-        services.AddHttpContextAccessor();
-
-		services.AddHttpContextAccessor();
-
-		services.AddScoped< IIdentityAuditActor, HttpIdentityAuditActor>();
-
-        services.AddScoped<IdentityAuditPropertyPolicy>();
-
-        services.AddScoped<IdentityUserAuditInterceptor>();
-    }
-
-    private static void RegisterDatabase(
-        IServiceCollection services,
-        IConfiguration configuration)
-    {
-        var connectionString =
-            configuration.GetConnectionString("DefaultConnection");
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(
-            connectionString);
-
-        services.AddDbContext<ApplicationDbContext>(
-            (serviceProvider, options) =>
-            {
-                options.UseSqlServer(connectionString);
-
-                options.AddInterceptors(
-                    serviceProvider.GetRequiredService<
-                        IdentityUserAuditInterceptor>());
+                policy.RequireAuthenticatedUser();
+                policy.RequireClaim(
+                    AccountSecurityClaimTypes.PasswordChangeRequired,
+                    "true");
             });
     }
 }
 
 ```
 
-**Registration warning:** If your existing extension already registers `ApplicationDbContext`, keep that registration and merge the `AddInterceptors` call into it. Do not register the same context twice.
+Register the normal policy as the default and fallback policy. Your login endpoints must explicitly allow anonymous access, and your password-change endpoint must use the `PasswordChangeOnly` policy.
 
-Your `Program.cs` remains:
+For Blazor pages, use `[Authorize]` on application pages and `[Authorize(Policy = "PasswordChangeOnly")]` on the password-change page. The `AuthorizeRouteView` in your router must be configured to use authorization.
+
+**Important:** do not rely on hiding navigation items or buttons. Authorization must protect the actual pages and server-side operations.
+
+## **7. Login-time inactivity enforcement**
+
+The scheduled job is deferred. This service enforces inactivity whenever a user successfully authenticates.
+
+I recommend separating credential verification from the decision to issue an application session. This also allows your AD authentication flow to use the same inactivity and password policies.
+
+Create `AccountLoginResult.cs`:
 
 ```
-builder.Services.AddApplicationServices(
-    builder.Configuration);
+
+namespace YourApplication.Security;
+
+/// <summary>
+/// Defines the possible outcomes of application login processing.
+/// </summary>
+public enum AccountLoginResult
+{
+    /// <summary>
+    /// The application session was created successfully.
+    /// </summary>
+    Succeeded,
+
+    /// <summary>
+    /// The account has been locked due to inactivity.
+    /// </summary>
+    LockedOut,
+
+    /// <summary>
+    /// The account is already locked.
+    /// </summary>
+    AlreadyLocked,
+
+    /// <summary>
+    /// The user must change their password.
+    /// </summary>
+    PasswordChangeRequired,
+
+    /// <summary>
+    /// The account could not be updated.
+    /// </summary>
+    AccountUpdateFailed
+}
+
 ```
 
-Keep your existing Identity and hybrid authentication registrations. The auditing registration does not replace them.
+Create `AccountLoginService.cs`:
 
-# **10. Automated tests**
+```
 
-I would keep the tests against a real EF Core relational provider rather than mocking `DbContext` or the change tracker.
+using Microsoft.AspNetCore.Identity;
+using YourApplication.Security;
 
-For the fast test suite, SQLite in-memory is suitable. SQL Server integration tests should additionally verify SQL Server-specific transaction and schema behaviour.
+namespace YourApplication.Services;
 
-### **Test project packages**
+/// <summary>
+/// Applies application account-security policies before creating a login session.
+/// </summary>
+public sealed class AccountLoginService
+{
+    private readonly UserManager<ApplicationUser> _userManager;
+    private readonly SignInManager<ApplicationUser> _signInManager;
+    private readonly AccountInactivityPolicy _inactivityPolicy;
+    private readonly AccountPasswordPolicy _passwordPolicy;
+    private readonly TimeProvider _timeProvider;
+
+    /// <summary>
+    /// Initialises the account login service.
+    /// </summary>
+    public AccountLoginService(
+        UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
+        AccountInactivityPolicy inactivityPolicy,
+        AccountPasswordPolicy passwordPolicy,
+        TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(userManager);
+        ArgumentNullException.ThrowIfNull(signInManager);
+        ArgumentNullException.ThrowIfNull(inactivityPolicy);
+        ArgumentNullException.ThrowIfNull(passwordPolicy);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        _userManager = userManager;
+        _signInManager = signInManager;
+        _inactivityPolicy = inactivityPolicy;
+        _passwordPolicy = passwordPolicy;
+        _timeProvider = timeProvider;
+    }
+
+    /// <summary>
+    /// Applies account-security policies and creates an application session
+    /// after the user's credentials have been successfully verified.
+    /// </summary>
+    public async Task<AccountLoginResult> CompleteVerifiedLoginAsync(
+        ApplicationUser user,
+        bool isPersistent,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (await _userManager.IsLockedOutAsync(user))
+        {
+            return AccountLoginResult.AlreadyLocked;
+        }
+
+        if (_inactivityPolicy.IsInactive(user))
+        {
+            IdentityResult enableLockoutResult =
+                await _userManager.SetLockoutEnabledAsync(user, true);
+
+            if (!enableLockoutResult.Succeeded)
+            {
+                return AccountLoginResult.AccountUpdateFailed;
+            }
+
+            IdentityResult lockoutResult =
+                await _userManager.SetLockoutEndDateAsync(
+                    user,
+                    DateTimeOffset.MaxValue);
+
+            if (!lockoutResult.Succeeded)
+            {
+                return AccountLoginResult.AccountUpdateFailed;
+            }
+
+            return AccountLoginResult.LockedOut;
+        }
+
+        bool passwordChangeRequired =
+            _passwordPolicy.MustChangePassword(user);
+
+        if (!passwordChangeRequired)
+        {
+            user.LastLoginAtUtc = _timeProvider.GetUtcNow();
+
+            IdentityResult updateResult =
+                await _userManager.UpdateAsync(user);
+
+            if (!updateResult.Succeeded)
+            {
+                return AccountLoginResult.AccountUpdateFailed;
+            }
+        }
+
+        await _signInManager.SignInAsync(
+            user,
+            isPersistent);
+
+        return passwordChangeRequired
+            ? AccountLoginResult.PasswordChangeRequired
+            : AccountLoginResult.Succeeded;
+    }
+}
+
+```
+
+There is an important contract here: `CompleteVerifiedLoginAsync` must only be called after credentials have been successfully verified.
+
+For local username/password authentication, the caller should use `CheckPasswordSignInAsync` to verify the credentials without issuing the normal authentication cookie, then call this service on success.
+
+For AD authentication, call this service after the directory credentials have been verified and the corresponding `ApplicationUser` has been resolved.
+
+If you use Identity two-factor authentication, its completion flow must also pass through this gate before it issues the final application cookie. Do not let a separate two-factor callback bypass inactivity enforcement.
+
+## **8. Password change service**
+
+Both administrator resets and user-initiated password changes should go through one service.
+
+The administrator must set `MustChangePassword` to `true`. The user must clear it after successfully changing their password.
+
+`AccountPasswordService.cs`:
+
+```
+
+using Microsoft.AspNetCore.Identity;
+
+namespace YourApplication.Services;
+
+/// <summary>
+/// Provides password-change operations for application accounts.
+/// </summary>
+public sealed class AccountPasswordService
+{
+    private readonly UserManager<ApplicationUser> _userManager;
+    private readonly SignInManager<ApplicationUser> _signInManager;
+    private readonly TimeProvider _timeProvider;
+
+    /// <summary>
+    /// Initialises the account password service.
+    /// </summary>
+    public AccountPasswordService(
+        UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(userManager);
+        ArgumentNullException.ThrowIfNull(signInManager);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        _userManager = userManager;
+        _signInManager = signInManager;
+        _timeProvider = timeProvider;
+    }
+
+    /// <summary>
+    /// Resets a user's password administratively and requires the user
+    /// to change it at their next login.
+    /// </summary>
+    public async Task<IdentityResult> ResetPasswordByAdministratorAsync(
+        ApplicationUser user,
+        string resetToken,
+        string newPassword)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        ArgumentException.ThrowIfNullOrWhiteSpace(resetToken);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newPassword);
+
+        if (user.PasswordManagedExternally)
+        {
+            return IdentityResult.Failed(
+                new IdentityError
+                {
+                    Code = "ExternalPasswordManagement",
+                    Description =
+                        "This user's password is managed by an external directory."
+                });
+        }
+
+        DateTimeOffset? originalPasswordChangedAt =
+            user.PasswordChangedAtUtc;
+
+        bool originalMustChangePassword =
+            user.MustChangePassword;
+
+        user.PasswordChangedAtUtc = _timeProvider.GetUtcNow();
+        user.MustChangePassword = true;
+
+        IdentityResult result =
+            await _userManager.ResetPasswordAsync(
+                user,
+                resetToken,
+                newPassword);
+
+        if (!result.Succeeded)
+        {
+            user.PasswordChangedAtUtc = originalPasswordChangedAt;
+            user.MustChangePassword = originalMustChangePassword;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Changes the current user's password, resets its expiry period,
+    /// clears the forced-change flag and refreshes the authentication session.
+    /// </summary>
+    public async Task<IdentityResult> ChangeOwnPasswordAsync(
+        ApplicationUser user,
+        string currentPassword,
+        string newPassword)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        ArgumentException.ThrowIfNullOrWhiteSpace(currentPassword);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newPassword);
+
+        if (user.PasswordManagedExternally)
+        {
+            return IdentityResult.Failed(
+                new IdentityError
+                {
+                    Code = "ExternalPasswordManagement",
+                    Description =
+                        "This user's password is managed by an external directory."
+                });
+        }
+
+        DateTimeOffset now = _timeProvider.GetUtcNow();
+
+        DateTimeOffset? originalPasswordChangedAt =
+            user.PasswordChangedAtUtc;
+
+        DateTimeOffset? originalLastLoginAt =
+            user.LastLoginAtUtc;
+
+        bool originalMustChangePassword =
+            user.MustChangePassword;
+
+        user.PasswordChangedAtUtc = now;
+        user.LastLoginAtUtc = now;
+        user.MustChangePassword = false;
+
+        IdentityResult result =
+            await _userManager.ChangePasswordAsync(
+                user,
+                currentPassword,
+                newPassword);
+
+        if (!result.Succeeded)
+        {
+            user.PasswordChangedAtUtc = originalPasswordChangedAt;
+            user.LastLoginAtUtc = originalLastLoginAt;
+            user.MustChangePassword = originalMustChangePassword;
+
+            return result;
+        }
+
+        await _signInManager.RefreshSignInAsync(user);
+
+        return IdentityResult.Success;
+    }
+}
+
+```
+
+The user password change operation deliberately refreshes the authentication session. That rebuilds the claims principal, removing the password-change restriction claim.
+
+The administrator reset uses `ResetPasswordAsync`, not direct modification of `PasswordHash`.
+
+**Important Interactive Server detail:** call `ChangeOwnPasswordAsync` from an HTTP request that can issue the updated authentication cookie, such as a controller POST endpoint. Do not rely on changing cookies from an already-established SignalR circuit event. The same applies to initial sign-in: the login form should submit to an HTTP endpoint that can issue the cookie.
+
+## **9. Central DI registration**
+
+Add the following to your existing central service-registration extension. Do not create a second `ApplicationDbContext` registration.
+
+```
+
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using YourApplication.Configuration;
+using YourApplication.Security;
+using YourApplication.Services;
+
+namespace YourApplication.Extensions;
+
+/// <summary>
+/// Provides central application service registration.
+/// </summary>
+public static class ApplicationServiceCollectionExtensions
+{
+    /// <summary>
+    /// Registers application account-security services.
+    /// </summary>
+    public static IServiceCollection AddAccountSecurity(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        services
+            .AddOptions<AccountSecurityOptions>()
+            .Bind(configuration.GetSection("AccountSecurity"))
+            .Validate(
+                options => options.PasswordExpiryDays > 0,
+                "PasswordExpiryDays must be greater than zero.")
+            .Validate(
+                options => options.InactiveAccountLockDays > 0,
+                "InactiveAccountLockDays must be greater than zero.")
+            .ValidateOnStart();
+
+        services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+
+        services.AddScoped<AccountPasswordPolicy>();
+        services.AddScoped<AccountInactivityPolicy>();
+        services.AddScoped<AccountLoginService>();
+        services.AddScoped<AccountPasswordService>();
+
+        services.Replace(
+            ServiceDescriptor.Scoped<
+                IUserClaimsPrincipalFactory<ApplicationUser>,
+                AccountClaimsPrincipalFactory>());
+
+        services.AddAuthorization(options =>
+        {
+            options.AddAccountAuthorizationPolicies();
+        });
+
+        return services;
+    }
+}
+
+```
+
+Call it from your existing registration:
+
+```
+builder.Services.AddAccountSecurity(builder.Configuration);
+```
+
+Call it after your existing Identity registration so the claims-principal factory replacement takes effect.
+
+If you already register `TimeProvider`, keep your existing registration rather than adding another one.
+
+## **10. EF Core mapping**
+
+Add the following to the existing `ApplicationDbContext.OnModelCreating` mapping for `ApplicationUser`:
+
+```
+
+builder.Entity<ApplicationUser>(entity =>
+{
+    entity.Property(user => user.LastLoginAtUtc)
+        .HasColumnType("datetimeoffset(7)");
+
+    entity.Property(user => user.PasswordChangedAtUtc)
+        .HasColumnType("datetimeoffset(7)");
+
+    entity.Property(user => user.CreatedAtUtc)
+        .HasColumnType("datetimeoffset(7)")
+        .IsRequired();
+
+    entity.Property(user => user.MustChangePassword)
+        .HasDefaultValue(false)
+        .IsRequired();
+
+    entity.Property(user => user.PasswordManagedExternally)
+        .HasDefaultValue(false)
+        .IsRequired();
+
+    entity.Property(user => user.IsExemptFromInactivityLockout)
+        .HasDefaultValue(false)
+        .IsRequired();
+});
+
+```
+
+Keep your existing Identity mappings. This is an addition to them, not a replacement.
+
+Also check your audit property policy. These fields should be audited:
+
+- `LastLoginAtUtc`
+- `PasswordChangedAtUtc`
+- `MustChangePassword`
+- `LockoutEnabled`
+- `LockoutEnd`
+
+They are useful for understanding why an account was locked or why a password change was required. Password hashes and security tokens must remain excluded.
+
+## **11. Unit tests**
+
+No database is required for these tests.
+
+For the test project, use:
 
 ```
 <ItemGroup>
-  <PackageReference Include="Microsoft.NET.Test.Sdk"
-                    Version="18.0.1" />
-
-  <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite"
-                    Version="10.0.0" />
-
-  <PackageReference Include="xunit.v3"
-                    Version="3.2.2" />
-
-  <PackageReference Include="Shouldly"
-                    Version="4.3.0" />
+  <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.0.0" />
+  <PackageReference Include="Shouldly" Version="4.3.0" />
+  <PackageReference Include="xunit.v3" Version="3.2.2" />
 </ItemGroup>
 ```
 
-Use versions aligned with the actual .NET 10 servicing version and your repository's package-management policy.
+Use package versions aligned with the rest of your solution if you already have a centrally managed package version file.
 
-### **IdentityUserAuditInterceptorTests.cs**
+### **Password policy tests**
+
+`AccountPasswordPolicyTests.cs`:
 
 ```
 
-using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 using Shouldly;
 using Xunit;
-using YourSolution.Application.Identity;
-using YourSolution.Domain.Users;
-using YourSolution.Infrastructure.Data;
-using YourSolution.Infrastructure.Identity;
+using YourApplication.Configuration;
+using YourApplication.Security;
 
-namespace YourSolution.Tests.Identity;
+namespace YourApplication.Tests.Security;
 
 /// <summary>
-/// Tests Identity user auditing through EF Core.
+/// Tests password-expiry policy calculations.
 /// </summary>
-public sealed class IdentityUserAuditInterceptorTests
+public sealed class AccountPasswordPolicyTests
 {
     [Fact]
-    public async Task SaveChangesAsync_WhenEmailChanges_ShouldCreateAuditRecord()
+    public void MustChangePassword_WhenPasswordIsWithinExpiryPeriod_ReturnsFalse()
     {
-        // Arrange
-        var timestamp = new DateTimeOffset(
-            2026, 11, 23, 13, 0, 0, TimeSpan.Zero);
+        FakeTimeProvider timeProvider = new(
+            new DateTimeOffset(2026, 11, 23, 12, 0, 0, TimeSpan.Zero));
 
-        await using var connection =
-            new SqliteConnection("Data Source=:memory:");
-
-        await connection.OpenAsync();
-
-        var interceptor = CreateInterceptor(timestamp);
-
-        var options = CreateOptions(
-            connection,
-            interceptor);
-
-        await using var context =
-            new ApplicationDbContext(options);
-
-        await context.Database.EnsureCreatedAsync();
-
-        var user = new ApplicationUser
+        ApplicationUser user = new()
         {
-            UserName = "john.smith",
-            Email = "old@company.com",
-            NormalizedEmail = "OLD@COMPANY.COM"
+            PasswordChangedAtUtc =
+                new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero)
         };
 
-        // Act: insert user
-        context.Users.Add(user);
+        AccountPasswordPolicy policy = new(
+            Options.Create(new AccountSecurityOptions
+            {
+                PasswordExpiryDays = 90
+            }),
+            timeProvider);
 
-        await context.SaveChangesAsync();
-
-        // Act: update user
-        user.Email = "new@company.com";
-        user.NormalizedEmail = "NEW@COMPANY.COM";
-
-        await context.SaveChangesAsync();
-
-        // Assert
-        var audit = await context.IdentityUserAudits
-            .SingleAsync(record =>
-                record.UserId == user.Id &&
-                record.PropertyName == "Email");
-
-        audit.Action.ShouldBe("UPDATE");
-        audit.OldValue.ShouldBe("old@company.com");
-        audit.NewValue.ShouldBe("new@company.com");
-        audit.ChangedBy.ShouldBe("admin-123");
-        audit.ChangedByName.ShouldBe("Administrator");
-        audit.CorrelationId.ShouldBe("correlation-123");
-        audit.ChangedAtUtc.ShouldBe(timestamp.UtcDateTime);
+        policy.MustChangePassword(user).ShouldBeFalse();
     }
 
     [Fact]
-    public async Task SaveChangesAsync_WhenUserIsCreated_ShouldCreateInsertAudits()
+    public void MustChangePassword_WhenPasswordHasExpired_ReturnsTrue()
     {
-        // Arrange
-        await using var connection =
-            new SqliteConnection("Data Source=:memory:");
+        FakeTimeProvider timeProvider = new(
+            new DateTimeOffset(2026, 11, 23, 12, 0, 0, TimeSpan.Zero));
 
-        await connection.OpenAsync();
-
-        var options = CreateOptions(
-            connection,
-            CreateInterceptor(TimeProvider.System.GetUtcNow()));
-
-        await using var context =
-            new ApplicationDbContext(options);
-
-        await context.Database.EnsureCreatedAsync();
-
-        var user = new ApplicationUser
+        ApplicationUser user = new()
         {
-            UserName = "john.smith",
-            Email = "john@company.com"
+            PasswordChangedAtUtc =
+                new DateTimeOffset(2026, 8, 1, 12, 0, 0, TimeSpan.Zero)
         };
 
-        // Act
-        context.Users.Add(user);
+        AccountPasswordPolicy policy = new(
+            Options.Create(new AccountSecurityOptions
+            {
+                PasswordExpiryDays = 90
+            }),
+            timeProvider);
 
-        await context.SaveChangesAsync();
-
-        // Assert
-        var auditRecords = await context.IdentityUserAudits
-            .Where(record => record.UserId == user.Id)
-            .ToListAsync();
-
-        auditRecords.ShouldNotBeEmpty();
-
-        auditRecords.ShouldAllBe(record =>
-            record.Action == "INSERT");
-
-        auditRecords.ShouldContain(record =>
-            record.PropertyName == "Email" &&
-            record.NewValue == "john@company.com");
+        policy.MustChangePassword(user).ShouldBeTrue();
     }
 
     [Fact]
-    public async Task SaveChangesAsync_WhenUserIsDeleted_ShouldCreateDeleteAudits()
+    public void MustChangePassword_WhenAdministratorFlagIsSet_ReturnsTrue()
     {
-        // Arrange
-        await using var connection =
-            new SqliteConnection("Data Source=:memory:");
+        FakeTimeProvider timeProvider = new(
+            new DateTimeOffset(2026, 11, 23, 12, 0, 0, TimeSpan.Zero));
 
-        await connection.OpenAsync();
-
-        var options = CreateOptions(
-            connection,
-            CreateInterceptor(TimeProvider.System.GetUtcNow()));
-
-        await using var context =
-            new ApplicationDbContext(options);
-
-        await context.Database.EnsureCreatedAsync();
-
-        var user = new ApplicationUser
+        ApplicationUser user = new()
         {
-            UserName = "john.smith",
-            Email = "john@company.com"
+            MustChangePassword = true,
+            PasswordChangedAtUtc =
+                new DateTimeOffset(2026, 11, 20, 12, 0, 0, TimeSpan.Zero)
         };
 
-        context.Users.Add(user);
+        AccountPasswordPolicy policy = new(
+            Options.Create(new AccountSecurityOptions
+            {
+                PasswordExpiryDays = 90
+            }),
+            timeProvider);
 
-        await context.SaveChangesAsync();
-
-        var userId = user.Id;
-
-        // Act
-        context.Users.Remove(user);
-
-        await context.SaveChangesAsync();
-
-        // Assert
-        var audit = await context.IdentityUserAudits
-            .SingleAsync(record =>
-                record.UserId == userId &&
-                record.PropertyName == "Email" &&
-                record.Action == "DELETE");
-
-        audit.OldValue.ShouldBe("john@company.com");
-        audit.NewValue.ShouldBeNull();
+        policy.MustChangePassword(user).ShouldBeTrue();
     }
 
     [Fact]
-    public async Task SaveChangesAsync_WhenPasswordHashChanges_ShouldNotAuditPasswordHash()
+    public void MustChangePassword_WhenPasswordDateIsMissing_ReturnsTrue()
     {
-        // Arrange
-        await using var connection =
-            new SqliteConnection("Data Source=:memory:");
+        FakeTimeProvider timeProvider = new(
+            new DateTimeOffset(2026, 11, 23, 12, 0, 0, TimeSpan.Zero));
 
-        await connection.OpenAsync();
+        ApplicationUser user = new();
 
-        var options = CreateOptions(
-            connection,
-            CreateInterceptor(TimeProvider.System.GetUtcNow()));
+        AccountPasswordPolicy policy = new(
+            Options.Create(new AccountSecurityOptions
+            {
+                PasswordExpiryDays = 90
+            }),
+            timeProvider);
 
-        await using var context =
-            new ApplicationDbContext(options);
-
-        await context.Database.EnsureCreatedAsync();
-
-        var user = new ApplicationUser
-        {
-            UserName = "john.smith",
-            PasswordHash = "OLD_HASH"
-        };
-
-        context.Users.Add(user);
-
-        await context.SaveChangesAsync();
-
-        // Act
-        user.PasswordHash = "NEW_HASH";
-
-        await context.SaveChangesAsync();
-
-        // Assert
-        var passwordAudit = await context.IdentityUserAudits
-            .AnyAsync(record =>
-                record.PropertyName == "PasswordHash");
-
-        passwordAudit.ShouldBeFalse();
+        policy.MustChangePassword(user).ShouldBeTrue();
     }
 
     [Fact]
-    public async Task SaveChangesAsync_WhenPropertyIsUnchanged_ShouldNotCreateAuditRecord()
+    public void MustChangePassword_WhenPasswordIsManagedExternally_ReturnsFalse()
     {
-        // Arrange
-        await using var connection =
-            new SqliteConnection("Data Source=:memory:");
+        FakeTimeProvider timeProvider = new(
+            new DateTimeOffset(2026, 11, 23, 12, 0, 0, TimeSpan.Zero));
 
-        await connection.OpenAsync();
-
-        var options = CreateOptions(
-            connection,
-            CreateInterceptor(TimeProvider.System.GetUtcNow()));
-
-        await using var context =
-            new ApplicationDbContext(options);
-
-        await context.Database.EnsureCreatedAsync();
-
-        var user = new ApplicationUser
+        ApplicationUser user = new()
         {
-            UserName = "john.smith",
-            Email = "john@company.com"
+            PasswordManagedExternally = true,
+            MustChangePassword = true
         };
 
-        context.Users.Add(user);
+        AccountPasswordPolicy policy = new(
+            Options.Create(new AccountSecurityOptions
+            {
+                PasswordExpiryDays = 90
+            }),
+            timeProvider);
 
-        await context.SaveChangesAsync();
-
-        // Act
-        user.Email = "john@company.com";
-
-        await context.SaveChangesAsync();
-
-        // Assert
-        var emailUpdate = await context.IdentityUserAudits
-            .AnyAsync(record =>
-                record.UserId == user.Id &&
-                record.PropertyName == "Email" &&
-                record.Action == "UPDATE");
-
-        emailUpdate.ShouldBeFalse();
-    }
-
-    [Fact]
-    public async Task SaveChangesAsync_WhenTransactionRollsBack_ShouldRollbackAuditAndUserChanges()
-    {
-        // Arrange
-        await using var connection =
-            new SqliteConnection("Data Source=:memory:");
-
-        await connection.OpenAsync();
-
-        var options = CreateOptions(
-            connection,
-            CreateInterceptor(TimeProvider.System.GetUtcNow()));
-
-        await using var context =
-            new ApplicationDbContext(options);
-
-        await context.Database.EnsureCreatedAsync();
-
-        var user = new ApplicationUser
-        {
-            UserName = "john.smith",
-            Email = "old@company.com"
-        };
-
-        context.Users.Add(user);
-
-        await context.SaveChangesAsync();
-
-        var userId = user.Id;
-
-        // Act
-        await using (var transaction =
-            await context.Database.BeginTransactionAsync())
-        {
-            user.Email = "new@company.com";
-
-            await context.SaveChangesAsync();
-
-            await transaction.RollbackAsync();
-        }
-
-        // Assert
-        await using var verificationContext =
-            new ApplicationDbContext(options);
-
-        var persistedUser = await verificationContext.Users
-            .SingleAsync(record => record.Id == userId);
-
-        persistedUser.Email.ShouldBe("old@company.com");
-
-        var updateAudit = await verificationContext.IdentityUserAudits
-            .AnyAsync(record =>
-                record.UserId == userId &&
-                record.PropertyName == "Email" &&
-                record.Action == "UPDATE");
-
-        updateAudit.ShouldBeFalse();
-    }
-
-    private static IdentityUserAuditInterceptor CreateInterceptor(
-        DateTimeOffset timestamp)
-    {
-        return new IdentityUserAuditInterceptor(
-            new TestAuditActor(
-                new IdentityAuditActor(
-                    "admin-123",
-                    "Administrator",
-                    "correlation-123")),
-            new IdentityAuditPropertyPolicy(),
-            new FixedTimeProvider(timestamp));
-    }
-
-    private static DbContextOptions<ApplicationDbContext> CreateOptions(
-        SqliteConnection connection,
-        IdentityUserAuditInterceptor interceptor)
-    {
-        return new DbContextOptionsBuilder<ApplicationDbContext>()
-            .UseSqlite(connection)
-            .AddInterceptors(interceptor)
-            .Options;
-    }
-
-    private sealed class TestAuditActor(
-        IdentityAuditActor actor) : IIdentityAuditActor
-    {
-        public IdentityAuditActor GetCurrentActor()
-        {
-            return actor;
-        }
-
-        public Task<IdentityAuditActor> GetCurrentActorAsync(
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(actor);
-        }
-    }
-
-    private sealed class FixedTimeProvider(
-        DateTimeOffset timestamp) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow()
-        {
-            return timestamp;
-        }
+        policy.MustChangePassword(user).ShouldBeFalse();
     }
 }
 
 ```
 
-### **IdentityAuditPropertyPolicyTests.cs**
+### **Inactivity policy tests**
+
+`AccountInactivityPolicyTests.cs`:
 
 ```
 
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 using Shouldly;
 using Xunit;
-using YourSolution.Infrastructure.Identity;
+using YourApplication.Configuration;
+using YourApplication.Security;
 
-namespace YourSolution.Tests.Identity;
+namespace YourApplication.Tests.Security;
 
 /// <summary>
-/// Tests the Identity audit property policy.
+/// Tests account inactivity calculations.
 /// </summary>
-public sealed class IdentityAuditPropertyPolicyTests
+public sealed class AccountInactivityPolicyTests
 {
-    private readonly IdentityAuditPropertyPolicy _sut = new();
-
-    [Theory]
-    [InlineData("PasswordHash")]
-    [InlineData("SecurityStamp")]
-    [InlineData("ConcurrencyStamp")]
-    [InlineData("AuthenticatorKey")]
-    [InlineData("RecoveryCodes")]
-    [InlineData("Id")]
-    public void ShouldAudit_WhenSensitivePropertyIsSupplied_ShouldReturnFalse(
-        string propertyName)
+    [Fact]
+    public void IsInactive_WhenLastLoginIsWithinThreshold_ReturnsFalse()
     {
-        // Act
-        var result = _sut.ShouldAudit(propertyName);
+        FakeTimeProvider timeProvider = new(
+            new DateTimeOffset(2026, 11, 23, 12, 0, 0, TimeSpan.Zero));
 
-        // Assert
-        result.ShouldBeFalse();
-    }
+        ApplicationUser user = new()
+        {
+            CreatedAtUtc =
+                new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            LastLoginAtUtc =
+                new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero)
+        };
 
-    [Theory]
-    [InlineData("Email")]
-    [InlineData("UserName")]
-    [InlineData("PhoneNumber")]
-    [InlineData("EmailConfirmed")]
-    [InlineData("LockoutEnabled")]
-    [InlineData("FirstName")]
-    [InlineData("LastName")]
-    public void ShouldAudit_WhenNormalPropertyIsSupplied_ShouldReturnTrue(
-        string propertyName)
-    {
-        // Act
-        var result = _sut.ShouldAudit(propertyName);
+        AccountInactivityPolicy policy = new(
+            Options.Create(new AccountSecurityOptions
+            {
+                InactiveAccountLockDays = 90
+            }),
+            timeProvider);
 
-        // Assert
-        result.ShouldBeTrue();
+        policy.IsInactive(user).ShouldBeFalse();
     }
 
     [Fact]
-    public void ShouldAudit_WhenPropertyNameIsEmpty_ShouldThrowException()
+    public void IsInactive_WhenLastLoginExceedsThreshold_ReturnsTrue()
     {
-        // Act
-        var action = () => _sut.ShouldAudit(string.Empty);
+        FakeTimeProvider timeProvider = new(
+            new DateTimeOffset(2026, 11, 23, 12, 0, 0, TimeSpan.Zero));
 
-        // Assert
-        Should.Throw<ArgumentException>(action);
+        ApplicationUser user = new()
+        {
+            CreatedAtUtc =
+                new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            LastLoginAtUtc =
+                new DateTimeOffset(2026, 8, 1, 12, 0, 0, TimeSpan.Zero)
+        };
+
+        AccountInactivityPolicy policy = new(
+            Options.Create(new AccountSecurityOptions
+            {
+                InactiveAccountLockDays = 90
+            }),
+            timeProvider);
+
+        policy.IsInactive(user).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void IsInactive_WhenUserHasNeverLoggedIn_UsesCreationDate()
+    {
+        FakeTimeProvider timeProvider = new(
+            new DateTimeOffset(2026, 11, 23, 12, 0, 0, TimeSpan.Zero));
+
+        ApplicationUser user = new()
+        {
+            CreatedAtUtc =
+                new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
+        };
+
+        AccountInactivityPolicy policy = new(
+            Options.Create(new AccountSecurityOptions
+            {
+                InactiveAccountLockDays = 90
+            }),
+            timeProvider);
+
+        policy.IsInactive(user).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void IsInactive_WhenUserIsExemptAndExemptionsEnabled_ReturnsFalse()
+    {
+        FakeTimeProvider timeProvider = new(
+            new DateTimeOffset(2026, 11, 23, 12, 0, 0, TimeSpan.Zero));
+
+        ApplicationUser user = new()
+        {
+            CreatedAtUtc =
+                new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            IsExemptFromInactivityLockout = true
+        };
+
+        AccountInactivityPolicy policy = new(
+            Options.Create(new AccountSecurityOptions
+            {
+                InactiveAccountLockDays = 90,
+                LockoutExemptionsEnabled = true
+            }),
+            timeProvider);
+
+        policy.IsInactive(user).ShouldBeFalse();
     }
 }
 
 ```
 
-Run the test suite using:
+These are pure unit tests. The login and password services should also have tests using mocked Identity managers to verify that they call the expected Identity operations and return the correct outcomes. Those tests should cover:
+
+- Inactive user: lockout enabled and lockout end set.
+- Already locked user: no new sign-in.
+- Expired password: restricted session created.
+- Administrator reset: forced-change flag persisted.
+- Successful own-password change: expiry date reset and sign-in refreshed.
+- Failed password change: password-policy fields not changed.
+- AD account: local password operations rejected.
+
+## **12. Connecting the login component**
+
+The local username/password login flow should follow this sequence:
 
 ```
-dotnet test \
-    --framework net10.0 \
-    -- \
-    --report-trx
+ApplicationUser? user =
+    await userManager.FindByNameAsync(model.UserName);
+
+if (user is null)
+{
+    // Return a generic invalid-credentials message.
+    return;
+}
+
+SignInResult verification =
+    await signInManager.CheckPasswordSignInAsync(
+        user,
+        model.Password,
+        lockoutOnFailure: true);
+
+if (verification.Succeeded)
+{
+    AccountLoginResult result =
+        await accountLoginService.CompleteVerifiedLoginAsync(
+            user,
+            model.RememberMe);
+
+    // Redirect according to result.
+}
+else if (verification.IsLockedOut)
+{
+    // Display the account-locked message.
+}
+else if (verification.RequiresTwoFactor)
+{
+    // Continue through the two-factor flow.
+}
+else
+{
+    // Display a generic invalid-credentials message.
+}
 ```
 
-The exact reporting options depend on the MTP runner configuration you install.
+This is the service-level flow, not code to execute directly from a Blazor circuit event. The actual login submission should go through an HTTP endpoint so Identity can issue the authentication cookie.
 
-# **11. Important implementation checks**
+For your pages, the intended authorization is:
 
-Before considering Sprint 1 complete, there are a few integration details worth making explicit.
+```
+@* Ordinary application pages *@
+@attribute [Authorize]
+```
 
-| Area                            | Expected behaviour                 |
-| ------------------------------- | ---------------------------------- |
-| UserManager.CreateAsync         | Audited                            |
-| UserManager.UpdateAsync         | Audited                            |
-| UserManager.DeleteAsync         | Audited                            |
-| UserManager.AddPasswordAsync    | PasswordHash excluded              |
-| UserManager.ChangePasswordAsync | PasswordHash excluded              |
-| UserManager.ResetPasswordAsync  | PasswordHash excluded              |
-| AD attribute synchronisation    | Audited when saved through EF Core |
-| Direct SQL changes              | Not captured                       |
-| EF Core ExecuteUpdateAsync      | Not captured                       |
+```
+@* Password-change page *@
+@attribute [Authorize(Policy = "PasswordChangeOnly")]
+```
 
-One additional consideration: the property policy currently excludes known sensitive properties by name. Any new confidential properties added to `ApplicationUser` must be reviewed and excluded explicitly.
+The login page should be anonymous:
 
-## **12. Two implementation details I would tighten before production**
+```
+@attribute [AllowAnonymous]
+```
 
-**A. UserManager integration testing**
+The password-change page should submit its change through an HTTP POST endpoint. After the password change succeeds, `RefreshSignInAsync` refreshes the cookie and the user can enter the normal application.
 
-The tests above exercise the actual EF Core interception pipeline. I would add a further integration test using a real `UserManager<ApplicationUser>` and `UserStore<ApplicationUser>` against the test database. That proves the Identity store registration actually uses the intercepted DbContext.
+### **Two things to be aware of**
 
-**B. Interactive Blazor actor resolution**
+1. The sample login flow deliberately separates credential verification from session creation. Your two-factor flow must do the same; don't use a two-factor completion method that issues a normal cookie before the account-security checks.
+2. Your AD authentication flow must also call `CompleteVerifiedLoginAsync` after successful directory authentication. Otherwise, AD users could bypass the application inactivity policy.
 
-Use asynchronous Identity operations from interactive Blazor components and services. Synchronous saves only resolve the actor through `IHttpContextAccessor`; an interactive circuit without an HTTP context will be recorded as an unattributed system operation. This is preferable to incorrectly attributing a background operation to an administrator.
+## **13. Final implementation checklist**
 
-## **Final Sprint 1 acceptance criteria**
+**Sprint 1 — account security**
 
-Scope agreed
+Included in design
 
-The deliverable is now limited to:
+- Configuration-driven password expiry
+- Administrator-forced password change
+- User password-change handling
+- Login-time inactivity enforcement
+- Identity account lockout
+- Restricted password-change authentication
+- AD-managed password distinction
+- TimeProvider-based date calculations
+- Database-first SQL changes
+- Central DI registration
+- Unit-test approach without SQLite
 
-1. SQL Server audit table and indexes.
-2. `ApplicationUser` change interception.
-3. Before-and-after property values.
-4. Administrator identification.
-5. UTC timestamps.
-6. Sensitive property exclusion.
-7. Atomic persistence with Identity changes.
-8. Centralised DI registration.
-9. Automated tests.
+**Deferred**
 
-No FluentUI pages, controllers, audit browsing, reporting or export functionality.
+- Scheduled inactivity-locking job
+- Account-security administration UI
+- Account-security reporting
+- Integration tests
 
-**One final architectural recommendation:** keep the audit table append-only at the database permission level. That gives you a much stronger audit trail than relying on application code alone.
+**One qualification about the code above:** it provides the security-policy and service foundation, but it is not yet a drop-in replacement for your login component. The HTTP login/change-password endpoints and your existing two-factor/AD flows must be wired into it. I don't want to invent those parts and accidentally give you an authentication bypass.
 
-This is the foundation I'd use for Sprint 1, with the integration tests and SQL Server verification as release gates.
+If you provide your current FluentUI login component and the relevant Identity registration from `Program.cs`, I can adapt the endpoint and component code to your actual application rather than make assumptions about its existing authentication flow.
